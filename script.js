@@ -15,6 +15,14 @@ const STATE = {
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET'];
 
+// We define multiple proxies to rotate if one gets rate limited
+const PROXIES = [
+    'https://api.allorigins.win/raw?url=',
+    'https://api.codetabs.com/v1/proxy?quest=',
+    'https://corsproxy.io/?url='
+];
+let proxyIndex = 0;
+
 document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
     initApiKeys();
@@ -96,7 +104,7 @@ function initUI() {
 
     document.querySelectorAll('th.sortable').forEach(th => {
         th.addEventListener('click', () => {
-            document.getElementById('orig-order-cb').checked = false; // Uncheck original order
+            document.getElementById('orig-order-cb').checked = false; 
             const property = th.getAttribute('data-sort');
             if (STATE.sortCol === property) STATE.sortAsc = !STATE.sortAsc;
             else { STATE.sortCol = property; STATE.sortAsc = true; }
@@ -253,7 +261,7 @@ window.removeSymbol = function(symbol) {
     renderTable();
 };
 
-// --- Logo Engine v8 (Brings back v6 FMP URL for Stocks) ---
+// --- Logo Engine ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
@@ -262,7 +270,6 @@ function getLogoHtml(symbol) {
     if (isCrypto) {
         url = `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`;
     } else {
-        // Back to v6 FMP CDN (Transparent PNG, highly reliable for US stocks)
         url = `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
     }
     
@@ -282,6 +289,7 @@ async function fetchData(force = false) {
 
     try {
         const fetchPromises = [];
+        
         // Binance Bulk Fetch (Extremely fast, 1 call)
         if (cryptoSymbols.length > 0) fetchPromises.push(fetchBinanceBulk(cryptoSymbols));
         
@@ -295,7 +303,7 @@ async function fetchData(force = false) {
                     fetchPromises.push(fetchFinnhubConcurrent(currentKey, stockSymbols));
                 }
             } else if (STATE.apiSource === 'yahoofinance') {
-                // Yahoo Finance Query (Free, fast, no auth)
+                // Yahoo Finance with Throttling, Batching, and Proxy Rotation
                 fetchPromises.push(fetchYahooFinance(stockSymbols));
             }
         }
@@ -315,7 +323,6 @@ async function fetchData(force = false) {
 // 1. Binance Bulk Fetcher (Ultra Fast)
 async function fetchBinanceBulk(cryptoList) {
     try {
-        // Bulk API for 24h ticker returns ALL coins instantly
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
         if(!res.ok) return;
         const allTickers = await res.json();
@@ -332,7 +339,6 @@ async function fetchBinanceBulk(cryptoList) {
                 STATE.lastData[sym].changeDay = parseFloat(data.priceChange);
                 STATE.lastData[sym].changePct = parseFloat(data.priceChangePercent);
                 
-                // Fetch 52w klines asynchronously
                 fetchBinanceHistorical(sym, pair);
             }
         });
@@ -355,7 +361,7 @@ async function fetchBinanceHistorical(sym, pair) {
                     if(l < low52) low52 = l;
                 });
                 
-                let price1Y = parseFloat(kData[0][4]); // Close price 52 weeks ago
+                let price1Y = parseFloat(kData[0][4]); 
                 let currPrice = STATE.lastData[sym].price;
                 let c365 = currPrice - price1Y;
                 let r1Y = (c365 / price1Y) * 100;
@@ -370,64 +376,99 @@ async function fetchBinanceHistorical(sym, pair) {
     } catch(e){}
 }
 
-// 2. Yahoo Finance Fetcher (New, Free, Real-time, 1Y Data included)
-// Note: We use a public CORS proxy (corsproxy.io) to fetch Yahoo API directly from browser
+// 2. Yahoo Finance Fetcher (With Throttling, Batching, and Proxy Rotation)
 async function fetchYahooFinance(stockList) {
     if(stockList.length === 0) return;
-    try {
-        const symbols = stockList.join(',');
-        // Using v7 spark endpoint which is fast and includes essential historical data
-        const proxyUrl = `https://corsproxy.io/?url=`;
+    
+    // Chunking the request to avoid 429 Too Many Requests
+    // Fetch 10 symbols per request, and wait slightly between chunks
+    const chunkSize = 10;
+    
+    for (let i = 0; i < stockList.length; i += chunkSize) {
+        const chunk = stockList.slice(i, i + chunkSize);
+        const symbols = chunk.join(',');
         const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
         
-        const res = await fetch(proxyUrl + targetUrl);
-        if(!res.ok) throw new Error("Yahoo API blocked or unavailable");
-        const data = await res.json();
+        let success = false;
+        let attempts = 0;
         
-        if(data && data.spark && data.spark.result) {
-            data.spark.result.forEach(item => {
-                const sym = item.symbol;
-                if(!item.response || !item.response[0] || !item.response[0].indicators) return;
+        // Proxy Rotation Logic
+        while (!success && attempts < PROXIES.length) {
+            const proxyUrl = PROXIES[proxyIndex];
+            
+            try {
+                const res = await fetch(proxyUrl + targetUrl);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
                 
-                const meta = item.response[0].meta;
-                const closePrices = item.response[0].indicators.quote[0].close;
+                // For allorigins, the actual response is inside a contents field
+                let data = await res.json();
+                if (proxyUrl.includes('allorigins') && data.contents) {
+                    data = JSON.parse(data.contents);
+                }
                 
-                if(!closePrices || closePrices.length === 0) return;
-                
-                // Remove nulls
-                const validPrices = closePrices.filter(p => p !== null);
-                if(validPrices.length === 0) return;
-                
-                const currentPrice = meta.regularMarketPrice;
-                const prevClose = meta.previousClose;
-                
-                const changeDay = currentPrice - prevClose;
-                const changePct = (changeDay / prevClose) * 100;
-                
-                // 1 Year calculations
-                const price1Y = validPrices[0]; // Oldest price in 1y range
-                const change365 = currentPrice - price1Y;
-                const return1Y = (change365 / price1Y) * 100;
-                
-                // 52W High/Low (calculate from 1y array)
-                const high52 = Math.max(...validPrices);
-                const low52 = Math.min(...validPrices);
-                
-                STATE.lastData[sym] = {
-                    symbol: sym,
-                    price: currentPrice,
-                    changeDay: changeDay,
-                    changePct: changePct,
-                    change365: change365,
-                    return1Y: return1Y,
-                    high52: high52,
-                    low52: low52
-                };
-            });
+                if(data && data.spark && data.spark.result) {
+                    data.spark.result.forEach(item => {
+                        const sym = item.symbol;
+                        if(!item.response || !item.response[0] || !item.response[0].indicators) return;
+                        
+                        const meta = item.response[0].meta;
+                        const closePrices = item.response[0].indicators.quote[0].close;
+                        
+                        if(!closePrices || closePrices.length === 0) return;
+                        
+                        const validPrices = closePrices.filter(p => p !== null);
+                        if(validPrices.length === 0) return;
+                        
+                        const currentPrice = meta.regularMarketPrice;
+                        const prevClose = meta.previousClose;
+                        
+                        const changeDay = currentPrice - prevClose;
+                        const changePct = prevClose ? (changeDay / prevClose) * 100 : 0;
+                        
+                        const price1Y = validPrices[0]; 
+                        const change365 = currentPrice - price1Y;
+                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                        
+                        const high52 = Math.max(...validPrices);
+                        const low52 = Math.min(...validPrices);
+                        
+                        STATE.lastData[sym] = {
+                            symbol: sym,
+                            price: currentPrice,
+                            changeDay: changeDay,
+                            changePct: changePct,
+                            change365: change365,
+                            return1Y: return1Y,
+                            high52: high52,
+                            low52: low52
+                        };
+                    });
+                    success = true;
+                } else {
+                    throw new Error("Invalid Yahoo format");
+                }
+            } catch (e) {
+                console.warn(`Proxy ${proxyUrl} failed for chunk ${i}:`, e);
+                // Rotate to next proxy
+                proxyIndex = (proxyIndex + 1) % PROXIES.length;
+                attempts++;
+            }
         }
-    } catch (e) {
-        console.error("Yahoo Fetch Failed:", e);
-        showAlert("Yahoo Finance data fetch failed. You might be rate limited by the public proxy.");
+        
+        if (!success) {
+            console.error("All proxies failed for chunk:", chunk);
+            // We only show alert once per cycle to avoid spamming the UI
+            if (i === 0) {
+                showAlert("Yahoo Finance rate limited. Rotating proxies...");
+            }
+        }
+        
+        // Throttling: Delay 1.5 seconds between batches to respect rate limits
+        if (i + chunkSize < stockList.length) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+        }
     }
 }
 
