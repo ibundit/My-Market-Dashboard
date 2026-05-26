@@ -18,11 +18,17 @@ const MAX_CREDITS_PER_MIN = 8;
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI'];
 
-// CoinMarketCap ID Mapping for accurate 64x64 coin logos
-const CMC_IDS = {
-    'BTC': 1, 'ETH': 1027, 'USDT': 825, 'BNB': 1839, 'SOL': 5426, 'USDC': 3408,
-    'XRP': 52, 'ADA': 2010, 'DOGE': 74, 'SHIB': 5994, 'AVAX': 5805, 'DOT': 6636,
-    'LINK': 1975, 'MATIC': 3890, 'LTC': 2, 'BCH': 1831, 'XLM': 512, 'NEAR': 6535, 'UNI': 7083
+// Mapping for Clearbit API (Transparent US Stock Logos)
+const STOCK_DOMAINS = {
+    'AAPL': 'apple.com', 'NVDA': 'nvidia.com', 'TSLA': 'tesla.com', 'MSFT': 'microsoft.com',
+    'SPY': 'ssga.com', 'ANET': 'arista.com', 'AMZN': 'amazon.com', 'GOOGL': 'google.com',
+    'GOOG': 'google.com', 'META': 'meta.com', 'NFLX': 'netflix.com', 'AMD': 'amd.com', 
+    'QQQ': 'invesco.com', 'INTC': 'intel.com', 'BABA': 'alibabagroup.com', 'V': 'visa.com',
+    'JNJ': 'jnj.com', 'WMT': 'walmart.com', 'JPM': 'jpmorganchase.com', 'MA': 'mastercard.com',
+    'PG': 'pg.com', 'HD': 'homedepot.com', 'CVX': 'chevron.com', 'LLY': 'lilly.com',
+    'BAC': 'bankofamerica.com', 'KO': 'coca-colacompany.com', 'TSM': 'tsmc.com',
+    'DIS': 'thewaltdisneycompany.com', 'ADBE': 'adobe.com', 'CRM': 'salesforce.com',
+    'CSCO': 'cisco.com', 'NKE': 'nike.com', 'XOM': 'exxonmobil.com'
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -282,23 +288,19 @@ window.removeSymbol = function(symbol) {
     renderTable();
 };
 
-// --- Logo System (Webull for Stocks, CoinMarketCap for Crypto) ---
+// --- Logo System (Developer Alternative: APIs for Transparent Logos) ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     if (isCrypto) {
-        const token = symbol.split(/[-/]/)[0].toUpperCase();
-        const cmcId = CMC_IDS[token];
-        
-        if (cmcId) {
-            const url = `https://s2.coinmarketcap.com/static/img/coins/64x64/${cmcId}.png`;
-            const fallbackUrl = `https://ui-avatars.com/api/?name=${token}&background=475569&color=fff&size=64&bold=true`;
-            return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
-        } else {
-            const fallbackUrl = `https://ui-avatars.com/api/?name=${token}&background=475569&color=fff&size=64&bold=true`;
-            return `<img src="${fallbackUrl}" class="img-logo">`;
-        }
+        const token = symbol.split(/[-/]/)[0].toLowerCase();
+        // Using spothq CDN for highly crisp, transparent SVG crypto logos
+        const url = `https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/svg/color/${token}.svg`;
+        const fallbackUrl = `https://ui-avatars.com/api/?name=${token.toUpperCase()}&background=475569&color=fff&size=64&bold=true`;
+        return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
     } else {
-        const url = `https://webull-api.webulltech.com/api/symbol/logo?ticker=${symbol}`;
+        const domain = STOCK_DOMAINS[symbol] || `${symbol.toLowerCase()}.com`;
+        // Using Clearbit API for transparent, borderless US stock logos
+        const url = `https://logo.clearbit.com/${domain}`;
         const fallbackUrl = `https://ui-avatars.com/api/?name=${symbol}&background=475569&color=fff&size=64&bold=true`;
         return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
     }
