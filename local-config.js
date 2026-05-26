@@ -1,5 +1,4 @@
 // Configuration File 
 window.APP_CONFIG = {
-    TWELVE_DATA_API_KEY: 'PASTE_KEY_HERE',
     FINNHUB_API_KEY: 'PASTE_KEY_HERE'
 };

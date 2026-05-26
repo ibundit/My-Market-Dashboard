@@ -21,8 +21,8 @@
                 <div class="control-group">
                     <label for="source-select">Stock API:</label>
                     <select id="source-select" title="Crypto always uses Binance API (Free, Real-time)">
-                        <option value="twelvedata">Twelve Data</option>
                         <option value="finnhub">Finnhub</option>
+                        <option value="yahoofinance">Yahoo Finance (Free/Fast)</option>
                     </select>
                 </div>
 
@@ -35,6 +35,7 @@
                     <label for="refresh-select">Auto-refresh:</label>
                     <select id="refresh-select">
                         <option value="0">Off</option>
+                        <option value="5">5s</option>
                         <option value="30">30s</option>
                         <option value="60">1m</option>
                         <option value="300">5m</option>
@@ -79,7 +80,7 @@
         
         <footer>
             <div class="footer-info">
-                <span>Data Sources: Finnhub / Twelve Data (Stocks) | Binance (Crypto)</span>
+                <span>Data Sources: Yahoo Finance / Finnhub (Stocks) | Binance (Crypto)</span>
                 <span>Last Updated: <span id="last-updated-time">—</span></span>
             </div>
             <div class="sync-controls">

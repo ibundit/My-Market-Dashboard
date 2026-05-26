@@ -3,19 +3,15 @@ const STATE = {
     watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
-    apiSource: localStorage.getItem('apiSource') || 'twelvedata',
+    apiSource: localStorage.getItem('apiSource') || 'yahoofinance',
     intervalId: null,
     lastData: {}, 
     sortCol: null,
     sortAsc: true,
-    tdIndex: {}, // Tracks Twelve Data batching index per tab
     keys: {
-        twelvedata: localStorage.getItem('TWELVE_DATA_API_KEY') || '',
         finnhub: localStorage.getItem('FINNHUB_API_KEY') || ''
     }
 };
-
-const MAX_CREDITS_PER_MIN = 8; 
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET'];
 
@@ -41,7 +37,7 @@ function initDataMigrate() {
 
 function initApiKeys() {
     if (window.APP_CONFIG) {
-        ['TWELVE_DATA_API_KEY', 'FINNHUB_API_KEY'].forEach(key => {
+        ['FINNHUB_API_KEY'].forEach(key => {
             const stateKey = key.split('_')[0].toLowerCase();
             if (!STATE.keys[stateKey] && window.APP_CONFIG[key] !== 'PASTE_KEY_HERE') {
                 STATE.keys[stateKey] = window.APP_CONFIG[key];
@@ -54,12 +50,11 @@ function initApiKeys() {
 
 function verifyKeyForCurrentSource() {
     const s = STATE.apiSource;
-    if (!STATE.keys[s]) {
-        const keyName = (s === 'finnhub' ? 'Finnhub' : 'Twelve Data');
-        const key = prompt(`Enter ${keyName} API Key (Required for Stocks):`);
+    if (s === 'finnhub' && !STATE.keys[s]) {
+        const key = prompt(`Enter Finnhub API Key (Required for Stocks via Finnhub):`);
         if (key) { 
             STATE.keys[s] = key; 
-            localStorage.setItem(`${s.toUpperCase()}_API_KEY`, key); 
+            localStorage.setItem(`FINNHUB_API_KEY`, key); 
         }
     }
 }
@@ -258,7 +253,7 @@ window.removeSymbol = function(symbol) {
     renderTable();
 };
 
-// --- Logo Engine ---
+// --- Logo Engine v8 (Brings back v6 FMP URL for Stocks) ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
@@ -267,7 +262,8 @@ function getLogoHtml(symbol) {
     if (isCrypto) {
         url = `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`;
     } else {
-        url = `https://logo.clearbit.com/${cleanSym.toLowerCase()}.com`; 
+        // Back to v6 FMP CDN (Transparent PNG, highly reliable for US stocks)
+        url = `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
     }
     
     const fallbackUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
@@ -275,7 +271,7 @@ function getLogoHtml(symbol) {
 }
 
 // --- Data Engine ---
-async function fetchData(forceResetBatch = false) {
+async function fetchData(force = false) {
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return updateStatus('yellow', 'Watchlist Empty');
 
@@ -291,31 +287,16 @@ async function fetchData(forceResetBatch = false) {
         
         // Stocks
         if (stockSymbols.length > 0) {
-            const currentKey = STATE.keys[STATE.apiSource];
-            if (!currentKey) {
-                showAlert(`Missing API Key for ${STATE.apiSource.toUpperCase()}`);
-            } else {
-                if (STATE.apiSource === 'twelvedata') {
-                    // Twelve Data Batching Logic
-                    if (STATE.tdIndex[STATE.currentTab] === undefined || forceResetBatch) {
-                        STATE.tdIndex[STATE.currentTab] = 0;
-                    }
-                    let idx = STATE.tdIndex[STATE.currentTab];
-                    let batch = stockSymbols.slice(idx, idx + 8);
-                    
-                    // Wrap around if we hit the end
-                    if (batch.length < 8 && stockSymbols.length > 8) {
-                        batch = batch.concat(stockSymbols.slice(0, 8 - batch.length));
-                    }
-                    
-                    // Advance index
-                    STATE.tdIndex[STATE.currentTab] = (idx + 8) % stockSymbols.length;
-                    fetchPromises.push(fetchTwelveData(currentKey, batch));
-                    
-                } else if (STATE.apiSource === 'finnhub') {
-                    // Finnhub Concurrent Fetch
+            if (STATE.apiSource === 'finnhub') {
+                const currentKey = STATE.keys.finnhub;
+                if (!currentKey) {
+                    showAlert(`Missing API Key for FINNHUB`);
+                } else {
                     fetchPromises.push(fetchFinnhubConcurrent(currentKey, stockSymbols));
                 }
+            } else if (STATE.apiSource === 'yahoofinance') {
+                // Yahoo Finance Query (Free, fast, no auth)
+                fetchPromises.push(fetchYahooFinance(stockSymbols));
             }
         }
         
@@ -339,21 +320,19 @@ async function fetchBinanceBulk(cryptoList) {
         if(!res.ok) return;
         const allTickers = await res.json();
         
-        // Map data to local state
         cryptoList.forEach(sym => {
             const token = sym.split('-')[0].toUpperCase();
             const pair = token + 'USDT';
             const data = allTickers.find(t => t.symbol === pair);
             
             if (data) {
-                // Initialize basic 24h data immediately
                 if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
                 STATE.lastData[sym].symbol = sym;
                 STATE.lastData[sym].price = parseFloat(data.lastPrice);
                 STATE.lastData[sym].changeDay = parseFloat(data.priceChange);
                 STATE.lastData[sym].changePct = parseFloat(data.priceChangePercent);
                 
-                // Fetch 52w klines asynchronously in background to not block UI
+                // Fetch 52w klines asynchronously
                 fetchBinanceHistorical(sym, pair);
             }
         });
@@ -385,15 +364,75 @@ async function fetchBinanceHistorical(sym, pair) {
                 STATE.lastData[sym].low52 = low52;
                 STATE.lastData[sym].change365 = c365;
                 STATE.lastData[sym].return1Y = r1Y;
-                renderTable(); // Re-render to show background data when ready
+                renderTable(); 
             }
         }
     } catch(e){}
 }
 
-// 2. Finnhub Concurrent Fetcher (Fast)
+// 2. Yahoo Finance Fetcher (New, Free, Real-time, 1Y Data included)
+// Note: We use a public CORS proxy (corsproxy.io) to fetch Yahoo API directly from browser
+async function fetchYahooFinance(stockList) {
+    if(stockList.length === 0) return;
+    try {
+        const symbols = stockList.join(',');
+        // Using v7 spark endpoint which is fast and includes essential historical data
+        const proxyUrl = `https://corsproxy.io/?url=`;
+        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
+        
+        const res = await fetch(proxyUrl + targetUrl);
+        if(!res.ok) throw new Error("Yahoo API blocked or unavailable");
+        const data = await res.json();
+        
+        if(data && data.spark && data.spark.result) {
+            data.spark.result.forEach(item => {
+                const sym = item.symbol;
+                if(!item.response || !item.response[0] || !item.response[0].indicators) return;
+                
+                const meta = item.response[0].meta;
+                const closePrices = item.response[0].indicators.quote[0].close;
+                
+                if(!closePrices || closePrices.length === 0) return;
+                
+                // Remove nulls
+                const validPrices = closePrices.filter(p => p !== null);
+                if(validPrices.length === 0) return;
+                
+                const currentPrice = meta.regularMarketPrice;
+                const prevClose = meta.previousClose;
+                
+                const changeDay = currentPrice - prevClose;
+                const changePct = (changeDay / prevClose) * 100;
+                
+                // 1 Year calculations
+                const price1Y = validPrices[0]; // Oldest price in 1y range
+                const change365 = currentPrice - price1Y;
+                const return1Y = (change365 / price1Y) * 100;
+                
+                // 52W High/Low (calculate from 1y array)
+                const high52 = Math.max(...validPrices);
+                const low52 = Math.min(...validPrices);
+                
+                STATE.lastData[sym] = {
+                    symbol: sym,
+                    price: currentPrice,
+                    changeDay: changeDay,
+                    changePct: changePct,
+                    change365: change365,
+                    return1Y: return1Y,
+                    high52: high52,
+                    low52: low52
+                };
+            });
+        }
+    } catch (e) {
+        console.error("Yahoo Fetch Failed:", e);
+        showAlert("Yahoo Finance data fetch failed. You might be rate limited by the public proxy.");
+    }
+}
+
+// 3. Finnhub Concurrent Fetcher (Fast)
 async function fetchFinnhubConcurrent(key, stockList) {
-    // Run all fetches concurrently to speed up 47+ stocks
     const promises = stockList.map(async (sym) => {
         try {
             const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${key}`);
@@ -413,41 +452,6 @@ async function fetchFinnhubConcurrent(key, stockList) {
     await Promise.all(promises);
 }
 
-// 3. Twelve Data Batch Fetcher (Respects Limit)
-async function fetchTwelveData(key, batchList) {
-    if (batchList.length === 0) return;
-    const formatted = batchList.join(',');
-    const res = await fetch(`https://api.twelvedata.com/quote?symbol=${formatted}&apikey=${key}`);
-    const data = await res.json();
-    if (data.status === 'error') throw new Error(data.message);
-
-    let norm = {};
-    if (batchList.length === 1) norm[data.symbol] = data;
-    else for (const k in data) norm[k] = data[k];
-
-    for (const sym of batchList) {
-        const q = norm[sym];
-        if (!q || q.status === 'error') continue;
-        
-        // Preserve existing historical data if any
-        let c365 = null, r1Y = null, h52 = null, l52 = null;
-        if (STATE.lastData[sym]) {
-             c365 = STATE.lastData[sym].change365;
-             r1Y = STATE.lastData[sym].return1Y;
-        }
-
-        STATE.lastData[sym] = {
-            symbol: sym,
-            price: parseFloat(q.close),
-            changeDay: parseFloat(q.change),
-            changePct: parseFloat(q.percent_change),
-            change365: c365, return1Y: r1Y,
-            high52: q.fifty_two_week ? parseFloat(q.fifty_two_week.high) : null,
-            low52: q.fifty_two_week ? parseFloat(q.fifty_two_week.low) : null
-        };
-    }
-}
-
 // --- Rendering ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
@@ -463,7 +467,6 @@ function renderTable() {
     const origOrderCb = document.getElementById('orig-order-cb');
     if (origOrderCb.checked || !STATE.sortCol) {
         // Original Add Order (which matches currentList array)
-        // No sort needed, already in order
     } else {
         items.sort((a, b) => {
             let vA = a[STATE.sortCol], vB = b[STATE.sortCol];
@@ -541,7 +544,6 @@ function handleDragEnd() {
     STATE.watchlists[STATE.currentTab] = Array.from(document.getElementById('table-body').children).map(tr => tr.id.replace('row-', ''));
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
     
-    // Auto-check original order box since drag defines the new custom "original" order
     document.getElementById('orig-order-cb').checked = true;
     STATE.sortCol = null; 
     updateSortIcons();
