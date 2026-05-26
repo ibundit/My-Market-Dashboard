@@ -8,17 +8,16 @@ const STATE = {
     lastData: {}, 
     sortCol: null,
     sortAsc: true,
+    tdIndex: {}, // Tracks Twelve Data batching index per tab
     keys: {
         twelvedata: localStorage.getItem('TWELVE_DATA_API_KEY') || '',
-        finnhub: localStorage.getItem('FINNHUB_API_KEY') || '',
-        fmp: localStorage.getItem('FMP_API_KEY') || ''
+        finnhub: localStorage.getItem('FINNHUB_API_KEY') || ''
     }
 };
 
 const MAX_CREDITS_PER_MIN = 8; 
 
-// Known cryptos for shorthand (e.g. typing BTC adds BTC-USD)
-const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI'];
+const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET'];
 
 document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
@@ -42,7 +41,7 @@ function initDataMigrate() {
 
 function initApiKeys() {
     if (window.APP_CONFIG) {
-        ['TWELVE_DATA_API_KEY', 'FINNHUB_API_KEY', 'FMP_API_KEY'].forEach(key => {
+        ['TWELVE_DATA_API_KEY', 'FINNHUB_API_KEY'].forEach(key => {
             const stateKey = key.split('_')[0].toLowerCase();
             if (!STATE.keys[stateKey] && window.APP_CONFIG[key] !== 'PASTE_KEY_HERE') {
                 STATE.keys[stateKey] = window.APP_CONFIG[key];
@@ -56,7 +55,7 @@ function initApiKeys() {
 function verifyKeyForCurrentSource() {
     const s = STATE.apiSource;
     if (!STATE.keys[s]) {
-        const keyName = s === 'fmp' ? 'Financial Modeling Prep (FMP)' : (s === 'finnhub' ? 'Finnhub' : 'Twelve Data');
+        const keyName = (s === 'finnhub' ? 'Finnhub' : 'Twelve Data');
         const key = prompt(`Enter ${keyName} API Key (Required for Stocks):`);
         if (key) { 
             STATE.keys[s] = key; 
@@ -71,26 +70,38 @@ function initUI() {
     
     document.getElementById('add-btn').addEventListener('click', addSymbols);
     document.getElementById('symbol-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') addSymbols(); });
-    document.getElementById('refresh-btn').addEventListener('click', fetchData);
+    document.getElementById('refresh-btn').addEventListener('click', () => fetchData(true));
     document.getElementById('add-tab-btn').addEventListener('click', addNewTab);
     
+    document.getElementById('export-btn').addEventListener('click', exportSyncCode);
+    document.getElementById('import-btn').addEventListener('click', importSyncCode);
+
     document.getElementById('source-select').addEventListener('change', (e) => {
         STATE.apiSource = e.target.value;
         localStorage.setItem('apiSource', STATE.apiSource);
         verifyKeyForCurrentSource();
         renderSkeleton();
-        fetchData();
+        fetchData(true);
     });
 
     document.getElementById('refresh-select').addEventListener('change', (e) => {
         STATE.refreshInterval = parseInt(e.target.value);
-        checkBudgetAndAdjust();
         localStorage.setItem('refreshInterval', STATE.refreshInterval);
         setupAutoRefresh();
     });
 
+    // Reset Sort Checkbox Logic
+    document.getElementById('orig-order-cb').addEventListener('change', (e) => {
+        if(e.target.checked) {
+            STATE.sortCol = null;
+            updateSortIcons();
+            renderTable();
+        }
+    });
+
     document.querySelectorAll('th.sortable').forEach(th => {
         th.addEventListener('click', () => {
+            document.getElementById('orig-order-cb').checked = false; // Uncheck original order
             const property = th.getAttribute('data-sort');
             if (STATE.sortCol === property) STATE.sortAsc = !STATE.sortAsc;
             else { STATE.sortCol = property; STATE.sortAsc = true; }
@@ -103,6 +114,33 @@ function initUI() {
     setupDragAndDrop();
     renderTabs();
     renderSkeleton();
+}
+
+// --- Sync / Export / Import ---
+function exportSyncCode() {
+    const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
+    const code = btoa(JSON.stringify(data));
+    prompt("Copy this Sync Code and paste it on another device:", code);
+}
+
+function importSyncCode() {
+    const code = prompt("Paste your Sync Code here:");
+    if (!code) return;
+    try {
+        const data = JSON.parse(atob(code));
+        if (data && data.watchlists) {
+            STATE.watchlists = data.watchlists;
+            STATE.currentTab = data.currentTab || Object.keys(data.watchlists)[0];
+            localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+            localStorage.setItem('currentTab', STATE.currentTab);
+            renderTabs();
+            renderSkeleton();
+            fetchData(true);
+            showAlert("Data imported successfully!");
+        } else { throw new Error("Invalid format"); }
+    } catch(e) {
+        showAlert("Failed to import. Invalid Sync Code.");
+    }
 }
 
 // --- Tabs Management ---
@@ -129,9 +167,10 @@ function switchTab(tabName) {
     if (STATE.currentTab === tabName) return;
     STATE.currentTab = tabName;
     localStorage.setItem('currentTab', tabName);
-    checkBudgetAndAdjust();
-    STATE.sortCol = null; updateSortIcons();
-    renderTabs(); renderSkeleton(); fetchData();
+    STATE.sortCol = null; 
+    document.getElementById('orig-order-cb').checked = true;
+    updateSortIcons();
+    renderTabs(); renderSkeleton(); fetchData(true);
 }
 
 function addNewTab() {
@@ -164,24 +203,13 @@ function deleteTab(tabName) {
         localStorage.setItem('currentTab', STATE.currentTab);
     }
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-    renderTabs(); renderSkeleton(); fetchData();
+    renderTabs(); renderSkeleton(); fetchData(true);
 }
 
 // --- Utils ---
-function checkBudgetAndAdjust() {
-    if (STATE.refreshInterval > 0 && STATE.apiSource === 'twelvedata') {
-        const stocks = (STATE.watchlists[STATE.currentTab] || []).filter(s => !s.includes('-'));
-        const requiredCredits = stocks.length * (60 / STATE.refreshInterval);
-        if (requiredCredits > MAX_CREDITS_PER_MIN) {
-            showAlert(`Too many stocks for Twelve Data free tier. Auto-refresh turned Off.`);
-            STATE.refreshInterval = 0; document.getElementById('refresh-select').value = '0';
-        }
-    }
-}
-
 function setupAutoRefresh() {
     if (STATE.intervalId) clearInterval(STATE.intervalId);
-    if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(fetchData, STATE.refreshInterval * 1000);
+    if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(() => fetchData(false), STATE.refreshInterval * 1000);
 }
 
 function showAlert(msg) {
@@ -218,7 +246,7 @@ function addSymbols() {
     
     if (addedCount > 0) {
         localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-        checkBudgetAndAdjust(); renderSkeleton(); fetchData();
+        renderSkeleton(); fetchData(true);
     }
     inputField.value = '';
 }
@@ -230,27 +258,24 @@ window.removeSymbol = function(symbol) {
     renderTable();
 };
 
-// --- Logo Engine v6 (Smart Hybrid) ---
+// --- Logo Engine ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
     
     let url = '';
     if (isCrypto) {
-        // CoinCap CDN covers almost all cryptos accurately and transparently
         url = `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`;
     } else {
-        // FMP CDN for US Stocks (Transparent PNG)
-        url = `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
+        url = `https://logo.clearbit.com/${cleanSym.toLowerCase()}.com`; 
     }
     
-    // DiceBear fallback for minimalist transparent SVG initials if logo doesn't exist
     const fallbackUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
     return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
 }
 
 // --- Data Engine ---
-async function fetchData() {
+async function fetchData(forceResetBatch = false) {
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return updateStatus('yellow', 'Watchlist Empty');
 
@@ -261,18 +286,36 @@ async function fetchData() {
 
     try {
         const fetchPromises = [];
-        // Crypto always goes to Binance (Free, No Key, Real-Time)
-        if (cryptoSymbols.length > 0) fetchPromises.push(fetchBinance(cryptoSymbols));
+        // Binance Bulk Fetch (Extremely fast, 1 call)
+        if (cryptoSymbols.length > 0) fetchPromises.push(fetchBinanceBulk(cryptoSymbols));
         
-        // Stocks go to selected source
+        // Stocks
         if (stockSymbols.length > 0) {
             const currentKey = STATE.keys[STATE.apiSource];
             if (!currentKey) {
                 showAlert(`Missing API Key for ${STATE.apiSource.toUpperCase()}`);
             } else {
-                if (STATE.apiSource === 'twelvedata') fetchPromises.push(fetchTwelveData(currentKey, stockSymbols));
-                else if (STATE.apiSource === 'finnhub') fetchPromises.push(fetchFinnhub(currentKey, stockSymbols));
-                else if (STATE.apiSource === 'fmp') fetchPromises.push(fetchFMP(currentKey, stockSymbols));
+                if (STATE.apiSource === 'twelvedata') {
+                    // Twelve Data Batching Logic
+                    if (STATE.tdIndex[STATE.currentTab] === undefined || forceResetBatch) {
+                        STATE.tdIndex[STATE.currentTab] = 0;
+                    }
+                    let idx = STATE.tdIndex[STATE.currentTab];
+                    let batch = stockSymbols.slice(idx, idx + 8);
+                    
+                    // Wrap around if we hit the end
+                    if (batch.length < 8 && stockSymbols.length > 8) {
+                        batch = batch.concat(stockSymbols.slice(0, 8 - batch.length));
+                    }
+                    
+                    // Advance index
+                    STATE.tdIndex[STATE.currentTab] = (idx + 8) % stockSymbols.length;
+                    fetchPromises.push(fetchTwelveData(currentKey, batch));
+                    
+                } else if (STATE.apiSource === 'finnhub') {
+                    // Finnhub Concurrent Fetch
+                    fetchPromises.push(fetchFinnhubConcurrent(currentKey, stockSymbols));
+                }
             }
         }
         
@@ -288,106 +331,117 @@ async function fetchData() {
     }
 }
 
-// 1. Binance Fetcher (Crypto only)
-async function fetchBinance(cryptoList) {
-    for (const sym of cryptoList) {
-        const token = sym.split('-')[0].toUpperCase();
-        try {
-            // 24hr Ticker endpoint
-            const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${token}USDT`);
-            if(!res.ok) continue;
-            const data = await res.json();
+// 1. Binance Bulk Fetcher (Ultra Fast)
+async function fetchBinanceBulk(cryptoList) {
+    try {
+        // Bulk API for 24h ticker returns ALL coins instantly
+        const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
+        if(!res.ok) return;
+        const allTickers = await res.json();
+        
+        // Map data to local state
+        cryptoList.forEach(sym => {
+            const token = sym.split('-')[0].toUpperCase();
+            const pair = token + 'USDT';
+            const data = allTickers.find(t => t.symbol === pair);
             
-            // Try fetching historical (1 Year) via klines (Weekly, limit 52)
-            let c365 = null, r1Y = null;
-            try {
-                const kRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${token}USDT&interval=1w&limit=53`);
-                if(kRes.ok) {
-                    const kData = await kRes.json();
-                    if(kData.length > 50) {
-                        const price1Y = parseFloat(kData[0][4]); // close price of 52 weeks ago
-                        const currPrice = parseFloat(data.lastPrice);
-                        c365 = currPrice - price1Y;
-                        r1Y = (c365 / price1Y) * 100;
-                    }
-                }
-            } catch(e){}
-
-            STATE.lastData[sym] = {
-                symbol: sym,
-                price: parseFloat(data.lastPrice),
-                changeDay: parseFloat(data.priceChange),
-                changePct: parseFloat(data.priceChangePercent),
-                change365: c365,
-                return1Y: r1Y,
-                high52: parseFloat(data.highPrice), // Binance 24h high as contextual fallback
-                low52: parseFloat(data.lowPrice)
-            };
-        } catch(e) { console.error(`Binance failed for ${sym}`, e); }
-    }
+            if (data) {
+                // Initialize basic 24h data immediately
+                if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
+                STATE.lastData[sym].symbol = sym;
+                STATE.lastData[sym].price = parseFloat(data.lastPrice);
+                STATE.lastData[sym].changeDay = parseFloat(data.priceChange);
+                STATE.lastData[sym].changePct = parseFloat(data.priceChangePercent);
+                
+                // Fetch 52w klines asynchronously in background to not block UI
+                fetchBinanceHistorical(sym, pair);
+            }
+        });
+    } catch(e) { console.error(`Binance bulk failed`, e); }
 }
 
-// 2. Financial Modeling Prep (FMP) Fetcher
-async function fetchFMP(key, stockList) {
-    const symbols = stockList.join(',');
-    const res = await fetch(`https://financialmodelingprep.com/api/v3/quote/${symbols}?apikey=${key}`);
-    const data = await res.json();
-    
-    if (data.length === undefined) throw new Error(data['Error Message'] || 'FMP Error');
-    
-    data.forEach(q => {
-        STATE.lastData[q.symbol] = {
-            symbol: q.symbol,
-            price: q.price,
-            changeDay: q.change,
-            changePct: q.changesPercentage,
-            change365: null, // Basic quote doesn't have 1y return
-            return1Y: null,
-            high52: q.yearHigh,
-            low52: q.yearLow
-        };
-    });
+// Background Historical Fetch for Binance
+async function fetchBinanceHistorical(sym, pair) {
+    try {
+        const kRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1w&limit=52`);
+        if(kRes.ok) {
+            const kData = await kRes.json();
+            if(kData && kData.length > 0) {
+                let high52 = -Infinity;
+                let low52 = Infinity;
+                kData.forEach(candle => {
+                    let h = parseFloat(candle[2]);
+                    let l = parseFloat(candle[3]);
+                    if(h > high52) high52 = h;
+                    if(l < low52) low52 = l;
+                });
+                
+                let price1Y = parseFloat(kData[0][4]); // Close price 52 weeks ago
+                let currPrice = STATE.lastData[sym].price;
+                let c365 = currPrice - price1Y;
+                let r1Y = (c365 / price1Y) * 100;
+
+                STATE.lastData[sym].high52 = high52;
+                STATE.lastData[sym].low52 = low52;
+                STATE.lastData[sym].change365 = c365;
+                STATE.lastData[sym].return1Y = r1Y;
+                renderTable(); // Re-render to show background data when ready
+            }
+        }
+    } catch(e){}
 }
 
-// 3. Finnhub Fetcher
-async function fetchFinnhub(key, stockList) {
-    for (const sym of stockList) {
+// 2. Finnhub Concurrent Fetcher (Fast)
+async function fetchFinnhubConcurrent(key, stockList) {
+    // Run all fetches concurrently to speed up 47+ stocks
+    const promises = stockList.map(async (sym) => {
         try {
             const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${key}`);
             const q = await res.json();
-            if (!q.c) continue;
-            STATE.lastData[sym] = {
-                symbol: sym,
-                price: q.c,
-                changeDay: q.d,
-                changePct: q.dp,
-                change365: null, return1Y: null,
-                high52: q.h, low52: q.l
-            };
+            if (q.c) {
+                STATE.lastData[sym] = {
+                    symbol: sym,
+                    price: q.c,
+                    changeDay: q.d,
+                    changePct: q.dp,
+                    change365: null, return1Y: null,
+                    high52: q.h, low52: q.l
+                };
+            }
         } catch(e) {}
-    }
+    });
+    await Promise.all(promises);
 }
 
-// 4. Twelve Data Fetcher
-async function fetchTwelveData(key, stockList) {
-    const formatted = stockList.join(',');
+// 3. Twelve Data Batch Fetcher (Respects Limit)
+async function fetchTwelveData(key, batchList) {
+    if (batchList.length === 0) return;
+    const formatted = batchList.join(',');
     const res = await fetch(`https://api.twelvedata.com/quote?symbol=${formatted}&apikey=${key}`);
     const data = await res.json();
     if (data.status === 'error') throw new Error(data.message);
 
     let norm = {};
-    if (stockList.length === 1) norm[data.symbol] = data;
+    if (batchList.length === 1) norm[data.symbol] = data;
     else for (const k in data) norm[k] = data[k];
 
-    for (const sym of stockList) {
+    for (const sym of batchList) {
         const q = norm[sym];
         if (!q || q.status === 'error') continue;
+        
+        // Preserve existing historical data if any
+        let c365 = null, r1Y = null, h52 = null, l52 = null;
+        if (STATE.lastData[sym]) {
+             c365 = STATE.lastData[sym].change365;
+             r1Y = STATE.lastData[sym].return1Y;
+        }
+
         STATE.lastData[sym] = {
             symbol: sym,
             price: parseFloat(q.close),
             changeDay: parseFloat(q.change),
             changePct: parseFloat(q.percent_change),
-            change365: null, return1Y: null,
+            change365: c365, return1Y: r1Y,
             high52: q.fifty_two_week ? parseFloat(q.fifty_two_week.high) : null,
             low52: q.fifty_two_week ? parseFloat(q.fifty_two_week.low) : null
         };
@@ -406,7 +460,11 @@ function renderTable() {
 
     let items = currentList.map(sym => STATE.lastData[sym] || { symbol: sym });
 
-    if (STATE.sortCol) {
+    const origOrderCb = document.getElementById('orig-order-cb');
+    if (origOrderCb.checked || !STATE.sortCol) {
+        // Original Add Order (which matches currentList array)
+        // No sort needed, already in order
+    } else {
         items.sort((a, b) => {
             let vA = a[STATE.sortCol], vB = b[STATE.sortCol];
             if (vA == null) return 1; if (vB == null) return -1;
@@ -432,7 +490,7 @@ function createRowElement(item) {
     const displaySymbol = item.symbol.includes('-') ? item.symbol.split('-')[0] : item.symbol;
 
     tr.innerHTML = `
-        <td class="drag-handle">☰</td>
+        <td class="drag-handle" title="Drag to reorder">☰</td>
         <td><div class="logo-container">${getLogoHtml(item.symbol)}</div></td>
         <td class="symbol-col">${displaySymbol}</td>
         <td class="text-right">${fmtMoney(item.price)}</td>
@@ -461,7 +519,12 @@ function renderSkeleton() {
 
 // --- Drag & Drop ---
 let dragSourceEl = null;
-function handleDragStart(e) { dragSourceEl = this; this.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/html', this.innerHTML); }
+function handleDragStart(e) { 
+    dragSourceEl = this; 
+    this.classList.add('dragging'); 
+    e.dataTransfer.effectAllowed = 'move'; 
+    e.dataTransfer.setData('text/html', this.innerHTML); 
+}
 function handleDragOver(e) {
     e.preventDefault(); e.dataTransfer.dropEffect = 'move';
     const tbody = document.getElementById('table-body');
@@ -477,6 +540,11 @@ function handleDragEnd() {
     this.classList.remove('dragging');
     STATE.watchlists[STATE.currentTab] = Array.from(document.getElementById('table-body').children).map(tr => tr.id.replace('row-', ''));
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-    STATE.sortCol = null; updateSortIcons();
+    
+    // Auto-check original order box since drag defines the new custom "original" order
+    document.getElementById('orig-order-cb').checked = true;
+    STATE.sortCol = null; 
+    updateSortIcons();
+    renderTable();
 }
 function setupDragAndDrop() { document.getElementById('table-body').addEventListener('dragover', e => e.preventDefault()); }

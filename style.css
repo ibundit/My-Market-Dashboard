@@ -21,6 +21,7 @@ header { display: flex; justify-content: space-between; align-items: center; fle
 .control-group { display: flex; align-items: center; gap: 8px; }
 input[type="text"], select { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px 12px; border-radius: 6px; font-size: 14px; outline: none; }
 input[type="text"]:focus, select:focus { border-color: var(--accent-color); }
+input[type="checkbox"] { cursor: pointer; transform: scale(1.2); }
 
 .btn { padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: background-color 0.2s; color: white; }
 .btn-small { padding: 6px 12px; font-size: 13px; }
@@ -70,6 +71,7 @@ tbody tr.dragging { opacity: 0.4; background-color: #334155 !important; border: 
 .val-neutral { color: var(--text-secondary); }
 .symbol-col { font-weight: 600; font-size: 15px; }
 
-footer { margin-top: 20px; padding: 0 10px; display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 13px; }
+footer { margin-top: 20px; padding: 0 10px; display: flex; justify-content: space-between; align-items: center; color: var(--text-secondary); font-size: 13px; flex-wrap: wrap; gap: 10px; }
+.sync-controls { display: flex; gap: 8px; }
 .skeleton { animation: skeleton-loading 1s linear infinite alternate; height: 20px; border-radius: 4px; width: 100%; background-color: var(--border-color); }
 @keyframes skeleton-loading { 0% { opacity: 0.5; } 100% { opacity: 1; } }

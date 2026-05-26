@@ -23,7 +23,6 @@
                     <select id="source-select" title="Crypto always uses Binance API (Free, Real-time)">
                         <option value="twelvedata">Twelve Data</option>
                         <option value="finnhub">Finnhub</option>
-                        <option value="fmp">FMP (Recommended)</option>
                     </select>
                 </div>
 
@@ -57,7 +56,9 @@
             <table id="dashboard-table">
                 <thead>
                     <tr>
-                        <th style="width: 40px;"></th>
+                        <th style="width: 40px;" class="text-center">
+                            <input type="checkbox" id="orig-order-cb" checked title="Check to keep original add/drag order">
+                        </th>
                         <th style="width: 50px;" class="text-center">Logo</th>
                         <th class="sortable" data-sort="symbol">Ticker <span class="sort-icon"></span></th>
                         <th class="sortable text-right" data-sort="price">Price <span class="sort-icon"></span></th>
@@ -78,8 +79,12 @@
         
         <footer>
             <div class="footer-info">
-                <span>Data Sources: FMP / Finnhub / Twelve Data (Stocks) | Binance (Crypto)</span>
+                <span>Data Sources: Finnhub / Twelve Data (Stocks) | Binance (Crypto)</span>
                 <span>Last Updated: <span id="last-updated-time">—</span></span>
+            </div>
+            <div class="sync-controls">
+                <button id="export-btn" class="btn secondary btn-small">Export Sync Code</button>
+                <button id="import-btn" class="btn secondary btn-small">Import Sync Code</button>
             </div>
         </footer>
     </div>
