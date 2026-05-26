@@ -1,11 +1,11 @@
 // Application State
 const STATE = {
-    watchlists: {}, // Tab Name -> Array of Symbols
+    watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
     apiSource: localStorage.getItem('apiSource') || 'twelvedata',
     intervalId: null,
-    lastData: {}, // Holds computed row objects
+    lastData: {}, 
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -14,12 +14,11 @@ const STATE = {
     }
 };
 
-const MAX_CREDITS_PER_MIN = 8; // Free Twelve Data Limit
+const MAX_CREDITS_PER_MIN = 8; 
 
-// Known crypto tokens to enable shorthand typing (e.g. "BTC" -> "BTC-USD")
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI'];
 
-// Explicit mappings for US stocks that don't follow the <ticker>.com pattern perfectly
+// Mapping for Google Favicon API (Replaced Clearbit for better reliability)
 const STOCK_DOMAINS = {
     'AAPL': 'apple.com', 'NVDA': 'nvidia.com', 'TSLA': 'tesla.com', 'MSFT': 'microsoft.com',
     'SPY': 'ssga.com', 'ANET': 'arista.com', 'AMZN': 'amazon.com', 'GOOGL': 'google.com',
@@ -27,7 +26,27 @@ const STOCK_DOMAINS = {
     'QQQ': 'invesco.com', 'INTC': 'intel.com', 'BABA': 'alibabagroup.com', 'V': 'visa.com',
     'JNJ': 'jnj.com', 'WMT': 'walmart.com', 'JPM': 'jpmorganchase.com', 'MA': 'mastercard.com',
     'PG': 'pg.com', 'HD': 'homedepot.com', 'CVX': 'chevron.com', 'LLY': 'lilly.com',
-    'BAC': 'bankofamerica.com', 'KO': 'coca-colacompany.com'
+    'BAC': 'bankofamerica.com', 'KO': 'coca-colacompany.com', 'TSM': 'tsmc.com',
+    'DIS': 'thewaltdisneycompany.com', 'ADBE': 'adobe.com', 'CRM': 'salesforce.com',
+    'CSCO': 'cisco.com', 'NKE': 'nike.com', 'XOM': 'exxonmobil.com'
+};
+
+// Sensible, clean display names
+const COMMON_NAMES = {
+    'AAPL': 'Apple Inc.', 'NVDA': 'NVIDIA Corporation', 'TSLA': 'Tesla', 'MSFT': 'Microsoft',
+    'SPY': 'SPDR S&P 500 ETF', 'ANET': 'Arista Networks', 'AMZN': 'Amazon',
+    'GOOGL': 'Alphabet (Class A)', 'GOOG': 'Alphabet (Class C)', 'META': 'Meta Platforms',
+    'NFLX': 'Netflix', 'AMD': 'Advanced Micro Devices', 'QQQ': 'Invesco QQQ', 'INTC': 'Intel',
+    'BABA': 'Alibaba Group', 'V': 'Visa', 'JNJ': 'Johnson & Johnson', 'WMT': 'Walmart',
+    'JPM': 'JPMorgan Chase', 'MA': 'Mastercard', 'PG': 'Procter & Gamble',
+    'HD': 'Home Depot', 'CVX': 'Chevron', 'LLY': 'Eli Lilly', 'BAC': 'Bank of America',
+    'KO': 'Coca-Cola', 'TSM': 'Taiwan Semiconductor', 'DIS': 'Walt Disney',
+    'ADBE': 'Adobe', 'CRM': 'Salesforce', 'CSCO': 'Cisco', 'NKE': 'Nike', 'XOM': 'Exxon Mobil',
+    // Cryptos
+    'BTC-USD': 'Bitcoin', 'ETH-USD': 'Ethereum', 'SOL-USD': 'Solana', 'BNB-USD': 'BNB',
+    'USDT-USD': 'Tether', 'USDC-USD': 'USDC', 'XRP-USD': 'XRP', 'ADA-USD': 'Cardano',
+    'DOGE-USD': 'Dogecoin', 'SHIB-USD': 'Shiba Inu', 'AVAX-USD': 'Avalanche',
+    'DOT-USD': 'Polkadot', 'LINK-USD': 'Chainlink', 'MATIC-USD': 'Polygon', 'LTC-USD': 'Litecoin'
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -41,7 +60,6 @@ function initDataMigrate() {
     let savedLists = JSON.parse(localStorage.getItem('watchlists'));
     let oldSingleList = JSON.parse(localStorage.getItem('watchlist'));
     
-    // Migration: If no watchlists object exists, create Default tab
     if (!savedLists) {
         savedLists = { "Default": oldSingleList || ['NVDA', 'ANET', 'SPY', 'BTC-USD'] };
         localStorage.setItem('watchlists', JSON.stringify(savedLists));
@@ -49,7 +67,6 @@ function initDataMigrate() {
     
     STATE.watchlists = savedLists;
     
-    // Set Current Tab
     let savedTab = localStorage.getItem('currentTab');
     if (!savedTab || !STATE.watchlists[savedTab]) {
         savedTab = Object.keys(STATE.watchlists)[0];
@@ -85,7 +102,6 @@ function initUI() {
     document.getElementById('refresh-select').value = STATE.refreshInterval;
     document.getElementById('source-select').value = STATE.apiSource;
     
-    // UI Observers
     document.getElementById('add-btn').addEventListener('click', addSymbols);
     document.getElementById('symbol-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') addSymbols(); });
     document.getElementById('refresh-btn').addEventListener('click', fetchData);
@@ -108,7 +124,6 @@ function initUI() {
         setupAutoRefresh();
     });
 
-    // Header Sort listeners
     document.querySelectorAll('th.sortable').forEach(th => {
         th.addEventListener('click', () => {
             const property = th.getAttribute('data-sort');
@@ -130,7 +145,6 @@ function initUI() {
 }
 
 // --- Tab Management ---
-
 function renderTabs() {
     const container = document.getElementById('tabs-list');
     container.innerHTML = '';
@@ -141,7 +155,6 @@ function renderTabs() {
         const div = document.createElement('div');
         div.className = `tab ${tabName === STATE.currentTab ? 'active' : ''}`;
         
-        // Show delete button only if more than 1 tab exists
         const showDelete = tabNames.length > 1;
         
         div.innerHTML = `
@@ -162,7 +175,7 @@ function switchTab(tabName) {
     
     checkBudgetAndAdjust();
     
-    STATE.sortCol = null; // reset sort on tab switch
+    STATE.sortCol = null;
     updateSortIcons();
     
     renderTabs();
@@ -174,12 +187,7 @@ function addNewTab() {
     const name = prompt("Enter name for the new Watchlist Tab:");
     if (!name || !name.trim()) return;
     const cleanName = name.trim();
-    
-    if (STATE.watchlists[cleanName]) {
-        showAlert("A tab with this name already exists.");
-        return;
-    }
-    
+    if (STATE.watchlists[cleanName]) { showAlert("A tab with this name already exists."); return; }
     STATE.watchlists[cleanName] = [];
     saveWatchlists();
     switchTab(cleanName);
@@ -189,11 +197,7 @@ function renameTab(oldName) {
     const newName = prompt("Enter new name for tab:", oldName);
     if (!newName || !newName.trim() || newName.trim() === oldName) return;
     const cleanName = newName.trim();
-    
-    if (STATE.watchlists[cleanName]) {
-        showAlert("A tab with this name already exists.");
-        return;
-    }
+    if (STATE.watchlists[cleanName]) { showAlert("A tab with this name already exists."); return; }
     
     STATE.watchlists[cleanName] = STATE.watchlists[oldName];
     delete STATE.watchlists[oldName];
@@ -202,22 +206,17 @@ function renameTab(oldName) {
         STATE.currentTab = cleanName;
         localStorage.setItem('currentTab', cleanName);
     }
-    
     saveWatchlists();
     renderTabs();
 }
 
 function deleteTab(tabName) {
     if (!confirm(`Are you sure you want to delete the tab '${tabName}'?`)) return;
-    
     delete STATE.watchlists[tabName];
-    
     if (STATE.currentTab === tabName) {
-        // Switch to the first available tab
         STATE.currentTab = Object.keys(STATE.watchlists)[0];
         localStorage.setItem('currentTab', STATE.currentTab);
     }
-    
     saveWatchlists();
     renderTabs();
     renderSkeleton();
@@ -229,7 +228,6 @@ function saveWatchlists() {
 }
 
 // --- Background Core ---
-
 function checkBudgetAndAdjust() {
     if (STATE.refreshInterval > 0 && STATE.apiSource === 'twelvedata') {
         const currentList = STATE.watchlists[STATE.currentTab] || [];
@@ -280,17 +278,12 @@ function addSymbols() {
     const rawInput = inputField.value;
     if (!rawInput.trim()) return;
     
-    // Split by comma, trim, uppercase, remove empty
     const symbolsToAdd = rawInput.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
     const currentList = STATE.watchlists[STATE.currentTab];
     let addedCount = 0;
 
     symbolsToAdd.forEach(sym => {
-        // Crypto Shorthand Check
-        if (KNOWN_CRYPTOS.includes(sym)) {
-            sym = sym + '-USD';
-        }
-        
+        if (KNOWN_CRYPTOS.includes(sym)) { sym = sym + '-USD'; }
         if (!currentList.includes(sym)) {
             currentList.push(sym);
             addedCount++;
@@ -303,7 +296,6 @@ function addSymbols() {
         renderSkeleton();
         fetchData();
     }
-    
     inputField.value = '';
 }
 
@@ -314,19 +306,21 @@ window.removeSymbol = function(symbol) {
     renderTable();
 };
 
-// --- Logo System ---
+// --- Logo System (Updated for extreme reliability) ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     if (isCrypto) {
         const token = symbol.split(/[-/]/)[0].toLowerCase();
         const url = `https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/32/color/${token}.png`;
         return `<img src="${url}" class="img-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="text-logo" style="display:none;">${token.substring(0,2)}</div>`;
+                <div class="text-logo" style="display:none;">${token.substring(0,2).toUpperCase()}</div>`;
     } else {
-        // US Stocks Fallback logic (uses domain map, defaults to <ticker>.com)
         const domain = STOCK_DOMAINS[symbol] || `${symbol.toLowerCase()}.com`;
-        return `<img src="https://logo.clearbit.com/${domain}" class="img-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="text-logo" style="display:none;">${symbol.substring(0,2)}</div>`;
+        // Google Favicon service bypasses Clearbit's strict CORS and Adblocker rules
+        const url = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+        const fallbackUrl = `https://ui-avatars.com/api/?name=${symbol}&background=475569&color=fff&size=64&bold=true`;
+        
+        return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
     }
 }
 
@@ -406,9 +400,13 @@ async function fetchTwelveData(key, currentList) {
             r1Y = (c365 / price1Y) * 100;
         }
 
+        // Apply clean name mapping
+        const apiName = q.name || '';
+        const displayName = COMMON_NAMES[sym] || (apiName.length > 0 && apiName !== sym ? apiName : sym);
+
         STATE.lastData[sym] = {
             symbol: sym,
-            name: q.name || '—',
+            name: displayName,
             price: price,
             changeDay: parseFloat(q.change),
             changePct: parseFloat(q.percent_change),
@@ -433,11 +431,11 @@ async function fetchFinnhub(key, currentList) {
             const q = await quoteRes.json();
             if (!q.c) continue;
 
-            const name = sym.includes('-') ? `${sym.split('-')[0]} Crypto` : `${sym} Equity`;
+            const displayName = COMMON_NAMES[sym] || (sym.includes('-') ? `${sym.split('-')[0]} Crypto` : `${sym} Equity`);
 
             STATE.lastData[sym] = {
                 symbol: sym,
-                name: name,
+                name: displayName,
                 price: q.c,
                 changeDay: q.d,
                 changePct: q.dp,
