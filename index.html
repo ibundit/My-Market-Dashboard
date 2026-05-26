@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Market Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="title-section">
+                <h1>Market Dashboard</h1>
+                <div class="status-indicator">
+                    <span id="connection-dot" class="dot green"></span>
+                    <span id="market-status">Checking connection...</span>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <div class="control-group">
+                    <input type="text" id="symbol-input" placeholder="e.g. AAPL, BTC-USD" autocomplete="off" />
+                    <button id="add-btn" class="btn primary">Add</button>
+                </div>
+                
+                <div class="control-group">
+                    <label for="refresh-select">Auto-refresh:</label>
+                    <select id="refresh-select">
+                        <option value="0">Off</option>
+                        <option value="30">30s</option>
+                        <option value="60">1m</option>
+                        <option value="300">5m</option>
+                    </select>
+                </div>
+                
+                <button id="refresh-btn" class="btn secondary">Refresh Now</button>
+            </div>
+        </header>
+
+        <div id="alerts" class="alerts"></div>
+
+        <div class="table-container">
+            <table id="dashboard-table">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Name</th>
+                        <th class="text-right">Price</th>
+                        <th class="text-right">Day's Change</th>
+                        <th class="text-right">Day's Change %</th>
+                        <th class="text-right">365 Day's Change</th>
+                        <th class="text-right">1 Year Return</th>
+                        <th class="text-right">52W High</th>
+                        <th class="text-right">52W Low</th>
+                        <th class="text-right">PE</th>
+                        <th class="text-center">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                    <!-- Rows rendered via JS -->
+                </tbody>
+            </table>
+        </div>
+        
+        <footer>
+            <div class="footer-info">
+                <span>Last Updated: <span id="last-updated-time">—</span></span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Configuration -->
+    <script src="local-config.js"></script>
+    <!-- Application Logic -->
+    <script src="script.js"></script>
+</body>
+</html>
