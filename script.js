@@ -1,4 +1,4 @@
-// Application State - Version 12 (Reverted to V9 Spark Endpoint + Performance/Accuracy Upgrades)
+// Application State
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -13,13 +13,13 @@ const STATE = {
     }
 };
 
-const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET','BNSOL','TON','TAO'];
+const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET'];
 
-// Proxies for Yahoo API Rotation (from v9)
+// We define multiple proxies to rotate if one gets rate limited
 const PROXIES = [
     'https://api.allorigins.win/raw?url=',
-    'https://corsproxy.io/?url=',
-    'https://api.codetabs.com/v1/proxy?quest='
+    'https://api.codetabs.com/v1/proxy?quest=',
+    'https://corsproxy.io/?url='
 ];
 let proxyIndex = 0;
 
@@ -93,6 +93,7 @@ function initUI() {
         setupAutoRefresh();
     });
 
+    // Reset Sort Checkbox Logic
     document.getElementById('orig-order-cb').addEventListener('change', (e) => {
         if(e.target.checked) {
             STATE.sortCol = null;
@@ -118,12 +119,13 @@ function initUI() {
     renderSkeleton();
 }
 
-// --- Sync ---
+// --- Sync / Export / Import ---
 function exportSyncCode() {
     const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
     const code = btoa(JSON.stringify(data));
-    prompt("Copy this Sync Code:", code);
+    prompt("Copy this Sync Code and paste it on another device:", code);
 }
+
 function importSyncCode() {
     const code = prompt("Paste your Sync Code here:");
     if (!code) return;
@@ -134,10 +136,14 @@ function importSyncCode() {
             STATE.currentTab = data.currentTab || Object.keys(data.watchlists)[0];
             localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
             localStorage.setItem('currentTab', STATE.currentTab);
-            renderTabs(); renderSkeleton(); fetchData(true);
+            renderTabs();
+            renderSkeleton();
+            fetchData(true);
             showAlert("Data imported successfully!");
         } else { throw new Error("Invalid format"); }
-    } catch(e) { showAlert("Failed to import. Invalid Sync Code."); }
+    } catch(e) {
+        showAlert("Failed to import. Invalid Sync Code.");
+    }
 }
 
 // --- Tabs Management ---
@@ -159,31 +165,48 @@ function renderTabs() {
         container.appendChild(div);
     });
 }
+
 function switchTab(tabName) {
     if (STATE.currentTab === tabName) return;
-    STATE.currentTab = tabName; localStorage.setItem('currentTab', tabName);
-    STATE.sortCol = null; document.getElementById('orig-order-cb').checked = true;
-    updateSortIcons(); renderTabs(); renderSkeleton(); fetchData(true);
+    STATE.currentTab = tabName;
+    localStorage.setItem('currentTab', tabName);
+    STATE.sortCol = null; 
+    document.getElementById('orig-order-cb').checked = true;
+    updateSortIcons();
+    renderTabs(); renderSkeleton(); fetchData(true);
 }
+
 function addNewTab() {
-    const name = prompt("Tab Name:");
+    const name = prompt("Enter name for the new Watchlist Tab:");
     if (!name || !name.trim()) return;
-    if (STATE.watchlists[name.trim()]) return showAlert("Exists.");
-    STATE.watchlists[name.trim()] = []; localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); switchTab(name.trim());
+    const cleanName = name.trim();
+    if (STATE.watchlists[cleanName]) return showAlert("A tab with this name already exists.");
+    STATE.watchlists[cleanName] = [];
+    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+    switchTab(cleanName);
 }
+
 function renameTab(oldName) {
-    const newName = prompt("New Name:", oldName);
+    const newName = prompt("Enter new name for tab:", oldName);
     if (!newName || !newName.trim() || newName.trim() === oldName) return;
-    if (STATE.watchlists[newName.trim()]) return showAlert("Exists.");
-    STATE.watchlists[newName.trim()] = STATE.watchlists[oldName]; delete STATE.watchlists[oldName];
-    if (STATE.currentTab === oldName) { STATE.currentTab = newName.trim(); localStorage.setItem('currentTab', newName.trim()); }
-    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderTabs();
+    const cleanName = newName.trim();
+    if (STATE.watchlists[cleanName]) return showAlert("A tab with this name already exists.");
+    STATE.watchlists[cleanName] = STATE.watchlists[oldName];
+    delete STATE.watchlists[oldName];
+    if (STATE.currentTab === oldName) { STATE.currentTab = cleanName; localStorage.setItem('currentTab', cleanName); }
+    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+    renderTabs();
 }
+
 function deleteTab(tabName) {
-    if (!confirm(`Delete '${tabName}'?`)) return;
+    if (!confirm(`Are you sure you want to delete '${tabName}'?`)) return;
     delete STATE.watchlists[tabName];
-    if (STATE.currentTab === tabName) { STATE.currentTab = Object.keys(STATE.watchlists)[0]; localStorage.setItem('currentTab', STATE.currentTab); }
-    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderTabs(); renderSkeleton(); fetchData(true);
+    if (STATE.currentTab === tabName) {
+        STATE.currentTab = Object.keys(STATE.watchlists)[0];
+        localStorage.setItem('currentTab', STATE.currentTab);
+    }
+    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+    renderTabs(); renderSkeleton(); fetchData(true);
 }
 
 // --- Utils ---
@@ -191,51 +214,70 @@ function setupAutoRefresh() {
     if (STATE.intervalId) clearInterval(STATE.intervalId);
     if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(() => fetchData(false), STATE.refreshInterval * 1000);
 }
+
 function showAlert(msg) {
     const alerts = document.getElementById('alerts');
     const el = document.createElement('div'); el.className = 'alert'; el.textContent = msg;
     alerts.appendChild(el); setTimeout(() => el.remove(), 6000);
 }
+
 function updateStatus(status, text) {
     document.getElementById('connection-dot').className = `dot ${status}`;
     document.getElementById('market-status').textContent = text;
 }
+
 function updateSortIcons() {
     document.querySelectorAll('th.sortable').forEach(th => {
         const icon = th.querySelector('.sort-icon');
         icon.textContent = th.getAttribute('data-sort') === STATE.sortCol ? (STATE.sortAsc ? '▲' : '▼') : '';
     });
 }
+
 function addSymbols() {
     const inputField = document.getElementById('symbol-input');
     const rawInput = inputField.value;
     if (!rawInput.trim()) return;
+    
     const symbolsToAdd = rawInput.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
     const currentList = STATE.watchlists[STATE.currentTab];
     let addedCount = 0;
+
     symbolsToAdd.forEach(sym => {
         if (KNOWN_CRYPTOS.includes(sym)) sym = sym + '-USD';
         if (!currentList.includes(sym)) { currentList.push(sym); addedCount++; }
     });
-    if (addedCount > 0) { localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderSkeleton(); fetchData(true); }
+    
+    if (addedCount > 0) {
+        localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+        renderSkeleton(); fetchData(true);
+    }
     inputField.value = '';
 }
+
 window.removeSymbol = function(symbol) {
     STATE.watchlists[STATE.currentTab] = STATE.watchlists[STATE.currentTab].filter(s => s !== symbol);
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-    delete STATE.lastData[symbol]; renderTable();
+    delete STATE.lastData[symbol];
+    renderTable();
 };
 
+// --- Logo Engine ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
-    let url = isCrypto 
-        ? `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`
-        : `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
+    
+    let url = '';
+    if (isCrypto) {
+        url = `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`;
+    } else {
+        url = `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
+    }
+    
     const fallbackUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
     return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
 }
 
+// --- Data Engine ---
 async function fetchData(force = false) {
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return updateStatus('yellow', 'Watchlist Empty');
@@ -248,20 +290,26 @@ async function fetchData(force = false) {
     try {
         const fetchPromises = [];
         
+        // Binance Bulk Fetch (Extremely fast, 1 call)
         if (cryptoSymbols.length > 0) fetchPromises.push(fetchBinanceBulk(cryptoSymbols));
         
+        // Stocks
         if (stockSymbols.length > 0) {
             if (STATE.apiSource === 'finnhub') {
-                const key = STATE.keys.finnhub;
-                if (!key) showAlert(`Missing API Key for FINNHUB`);
-                else fetchPromises.push(fetchFinnhubConcurrent(key, stockSymbols));
+                const currentKey = STATE.keys.finnhub;
+                if (!currentKey) {
+                    showAlert(`Missing API Key for FINNHUB`);
+                } else {
+                    fetchPromises.push(fetchFinnhubConcurrent(currentKey, stockSymbols));
+                }
             } else if (STATE.apiSource === 'yahoofinance') {
-                // Reverted to v9 logic (Spark API) but optimized concurrently
-                fetchPromises.push(fetchYahooFinanceSparkAPI(stockSymbols));
+                // Yahoo Finance with Throttling, Batching, and Proxy Rotation
+                fetchPromises.push(fetchYahooFinance(stockSymbols));
             }
         }
         
         await Promise.all(fetchPromises);
+        
         document.getElementById('last-updated-time').textContent = new Date().toLocaleTimeString();
         updateStatus('green', 'Connected');
         renderTable();
@@ -272,7 +320,7 @@ async function fetchData(force = false) {
     }
 }
 
-// 1. Binance Bulk Fetcher (Smart Pair Matching from v10/v11 - Keeps working for BNSOL etc)
+// 1. Binance Bulk Fetcher (Ultra Fast)
 async function fetchBinanceBulk(cryptoList) {
     try {
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
@@ -281,11 +329,8 @@ async function fetchBinanceBulk(cryptoList) {
         
         cryptoList.forEach(sym => {
             const token = sym.split('-')[0].toUpperCase();
-            const data = allTickers.find(t => t.symbol === token + 'USDT') ||
-                         allTickers.find(t => t.symbol === token + 'USDC') ||
-                         allTickers.find(t => t.symbol === token + 'FDUSD') ||
-                         allTickers.find(t => t.symbol === token + 'BTC') ||
-                         allTickers.find(t => t.symbol === token + 'BNB');
+            const pair = token + 'USDT';
+            const data = allTickers.find(t => t.symbol === pair);
             
             if (data) {
                 if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
@@ -294,77 +339,13 @@ async function fetchBinanceBulk(cryptoList) {
                 STATE.lastData[sym].changeDay = parseFloat(data.priceChange);
                 STATE.lastData[sym].changePct = parseFloat(data.priceChangePercent);
                 
-                fetchBinanceHistorical(sym, data.symbol);
+                fetchBinanceHistorical(sym, pair);
             }
         });
     } catch(e) { console.error(`Binance bulk failed`, e); }
 }
 
-// ฟังก์ชันสำรองสำหรับดึงเหรียญที่ไม่อยู่ใน Binance (เช่น L3) พร้อมคำนวณ 52W High/Low เอง
-async function fetchCoinCapFallback(sym, token) {
-    try {
-        // 1. ค้นหา ID ของเหรียญในระบบ CoinCap ก่อน (CoinCap ใช้ชื่อเต็ม เช่น bitcoin, layer3)
-        const searchRes = await fetch(`https://api.coincap.io/v2/assets?search=${token}&limit=1`);
-        if(!searchRes.ok) return;
-        const searchJson = await searchRes.json();
-        
-        if (searchJson.data && searchJson.data.length > 0) {
-            const coinData = searchJson.data[0];
-            const coinId = coinData.id; // จะได้ชื่อ ID เช่น 'layer3'
-            
-            if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
-            
-            const currentPrice = parseFloat(coinData.priceUsd);
-            const changePct = parseFloat(coinData.changePercent24Hr);
-            
-            STATE.lastData[sym].symbol = sym;
-            STATE.lastData[sym].price = currentPrice;
-            STATE.lastData[sym].changePct = changePct;
-            STATE.lastData[sym].changeDay = currentPrice - (currentPrice / (1 + (changePct/100)));
-
-            // 2. ดึงข้อมูลประวัติย้อนหลัง 1 ปี (365 วัน) เพื่อมาคำนวณ 52W High/Low
-            const now = Date.now();
-            const oneYearAgo = now - (365 * 24 * 60 * 60 * 1000);
-            
-            try {
-                // เรียก API ประวัติราคาแบบรายวัน (interval=d1) ย้อนหลัง 1 ปี
-                const histRes = await fetch(`https://api.coincap.io/v2/assets/${coinId}/history?interval=d1&start=${oneYearAgo}&end=${now}`);
-                if (histRes.ok) {
-                    const histJson = await histRes.json();
-                    const historyData = histJson.data;
-                    
-                    if (historyData && historyData.length > 0) {
-                        // ดึงราคาปิดของทุกวันออกมาใส่ Array
-                        const validPrices = historyData.map(item => parseFloat(item.priceUsd));
-                        
-                        // คำนวณ 52W High / Low โดยเอา Array มาหาค่า Max/Min (รวมราคาปัจจุบันเข้าไปด้วย)
-                        const high52 = Math.max(...validPrices, currentPrice);
-                        const low52 = Math.min(...validPrices, currentPrice);
-                        
-                        // คำนวณ 1Y Return และ 365D Change
-                        const price1Y = validPrices[0]; // ราคาของวันแรกสุดในข้อมูล (1 ปีที่แล้ว)
-                        const change365 = currentPrice - price1Y;
-                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                        
-                        // บันทึกค่าลง State
-                        STATE.lastData[sym].high52 = high52;
-                        STATE.lastData[sym].low52 = low52;
-                        STATE.lastData[sym].change365 = change365;
-                        STATE.lastData[sym].return1Y = return1Y;
-                    }
-                }
-            } catch(histError) { 
-                console.error(`Failed to fetch history for ${coinId}`, histError); 
-            }
-            
-            // สั่งอัปเดตตาราง
-            renderTable();
-        }
-    } catch(e) { 
-        console.error(`CoinCap fallback failed for ${token}`, e); 
-    }
-}
-
+// Background Historical Fetch for Binance
 async function fetchBinanceHistorical(sym, pair) {
     try {
         const kRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1w&limit=52`);
@@ -374,8 +355,10 @@ async function fetchBinanceHistorical(sym, pair) {
                 let high52 = -Infinity;
                 let low52 = Infinity;
                 kData.forEach(candle => {
-                    let h = parseFloat(candle[2]), l = parseFloat(candle[3]);
-                    if(h > high52) high52 = h; if(l < low52) low52 = l;
+                    let h = parseFloat(candle[2]);
+                    let l = parseFloat(candle[3]);
+                    if(h > high52) high52 = h;
+                    if(l < low52) low52 = l;
                 });
                 
                 let price1Y = parseFloat(kData[0][4]); 
@@ -393,96 +376,98 @@ async function fetchBinanceHistorical(sym, pair) {
     } catch(e){}
 }
 
-// 2. REVERTED TO V9: Yahoo Finance Spark API (with High Performance Concurrency & Accuracy Fix)
-const delay = ms => new Promise(res => setTimeout(res, ms));
-
-async function fetchYahooFinanceSparkAPI(stockList) {
+// 2. Yahoo Finance Fetcher (With Throttling, Batching, and Proxy Rotation)
+async function fetchYahooFinance(stockList) {
     if(stockList.length === 0) return;
     
-    const chunkSize = 15; // Safe chunk size for URLs
-    const batchPromises = [];
+    // Chunking the request to avoid 429 Too Many Requests
+    // Fetch 10 symbols per request, and wait slightly between chunks
+    const chunkSize = 10;
     
     for (let i = 0; i < stockList.length; i += chunkSize) {
         const chunk = stockList.slice(i, i + chunkSize);
+        const symbols = chunk.join(',');
+        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
         
-        // Stagger requests to avoid 429 Rate Limit from proxy (e.g. 0ms, 300ms, 600ms)
-        const staggerDelay = (i / chunkSize) * 300; 
+        let success = false;
+        let attempts = 0;
         
-        const p = delay(staggerDelay).then(() => fetchYahooChunk(chunk));
-        batchPromises.push(p);
-    }
-    
-    await Promise.all(batchPromises);
-}
-
-async function fetchYahooChunk(chunk) {
-    const symbols = chunk.join(',');
-    // Reverting exactly to the v9 endpoint
-    const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
-    
-    let success = false;
-    let attempts = 0;
-    
-    while (!success && attempts < PROXIES.length) {
-        const proxyUrl = PROXIES[proxyIndex];
-        try {
-            const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Proxy Rotation Logic
+        while (!success && attempts < PROXIES.length) {
+            const proxyUrl = PROXIES[proxyIndex];
             
-            let data = await res.json();
-            if (proxyUrl.includes('allorigins') && data.contents) {
-                data = JSON.parse(data.contents);
+            try {
+                const res = await fetch(proxyUrl + targetUrl);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                
+                // For allorigins, the actual response is inside a contents field
+                let data = await res.json();
+                if (proxyUrl.includes('allorigins') && data.contents) {
+                    data = JSON.parse(data.contents);
+                }
+                
+                if(data && data.spark && data.spark.result) {
+                    data.spark.result.forEach(item => {
+                        const sym = item.symbol;
+                        if(!item.response || !item.response[0] || !item.response[0].indicators) return;
+                        
+                        const meta = item.response[0].meta;
+                        const closePrices = item.response[0].indicators.quote[0].close;
+                        
+                        if(!closePrices || closePrices.length === 0) return;
+                        
+                        const validPrices = closePrices.filter(p => p !== null);
+                        if(validPrices.length === 0) return;
+                        
+                        const currentPrice = meta.regularMarketPrice;
+                        const prevClose = meta.previousClose;
+                        
+                        const changeDay = currentPrice - prevClose;
+                        const changePct = prevClose ? (changeDay / prevClose) * 100 : 0;
+                        
+                        const price1Y = validPrices[0]; 
+                        const change365 = currentPrice - price1Y;
+                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                        
+                        const high52 = Math.max(...validPrices);
+                        const low52 = Math.min(...validPrices);
+                        
+                        STATE.lastData[sym] = {
+                            symbol: sym,
+                            price: currentPrice,
+                            changeDay: changeDay,
+                            changePct: changePct,
+                            change365: change365,
+                            return1Y: return1Y,
+                            high52: high52,
+                            low52: low52
+                        };
+                    });
+                    success = true;
+                } else {
+                    throw new Error("Invalid Yahoo format");
+                }
+            } catch (e) {
+                console.warn(`Proxy ${proxyUrl} failed for chunk ${i}:`, e);
+                // Rotate to next proxy
+                proxyIndex = (proxyIndex + 1) % PROXIES.length;
+                attempts++;
             }
-            
-            if(data && data.spark && data.spark.result) {
-                data.spark.result.forEach(item => {
-                    const sym = item.symbol;
-                    if(!item.response || !item.response[0] || !item.response[0].indicators) return;
-                    
-                    const meta = item.response[0].meta;
-                    const closePrices = item.response[0].indicators.quote[0].close;
-                    
-                    if(!closePrices || closePrices.length === 0) return;
-                    
-                    // Filter out nulls
-                    const validPrices = closePrices.filter(p => p !== null && p !== undefined);
-                    if(validPrices.length === 0) return;
-                    
-                    // EXACT ACCURACY CALCULATIONS
-                    const currentPrice = meta.regularMarketPrice;
-                    const prevClose = meta.previousClose || meta.chartPreviousClose;
-                    
-                    // Change & Change % (Daily)
-                    const changeDay = currentPrice - prevClose;
-                    const changePct = prevClose ? (changeDay / prevClose) * 100 : 0;
-                    
-                    // 1Y Return & 365D Change
-                    const price1Y = validPrices[0]; // Oldest price from 1 year ago
-                    const change365 = currentPrice - price1Y;
-                    const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                    
-                    // 52W High / Low (calculated strictly from all valid array data + current price)
-                    const high52 = Math.max(...validPrices, currentPrice);
-                    const low52 = Math.min(...validPrices, currentPrice);
-                    
-                    STATE.lastData[sym] = {
-                        symbol: sym,
-                        price: currentPrice,
-                        changeDay: changeDay,
-                        changePct: changePct,
-                        change365: change365,
-                        return1Y: return1Y,
-                        high52: high52,
-                        low52: low52
-                    };
-                });
-                success = true;
-            } else {
-                throw new Error("Invalid Yahoo format");
+        }
+        
+        if (!success) {
+            console.error("All proxies failed for chunk:", chunk);
+            // We only show alert once per cycle to avoid spamming the UI
+            if (i === 0) {
+                showAlert("Yahoo Finance rate limited. Rotating proxies...");
             }
-        } catch (e) {
-            proxyIndex = (proxyIndex + 1) % PROXIES.length;
-            attempts++;
+        }
+        
+        // Throttling: Delay 1.5 seconds between batches to respect rate limits
+        if (i + chunkSize < stockList.length) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
         }
     }
 }
@@ -495,8 +480,12 @@ async function fetchFinnhubConcurrent(key, stockList) {
             const q = await res.json();
             if (q.c) {
                 STATE.lastData[sym] = {
-                    symbol: sym, price: q.c, changeDay: q.d, changePct: q.dp,
-                    change365: null, return1Y: null, high52: q.h, low52: q.l
+                    symbol: sym,
+                    price: q.c,
+                    changeDay: q.d,
+                    changePct: q.dp,
+                    change365: null, return1Y: null,
+                    high52: q.h, low52: q.l
                 };
             }
         } catch(e) {}
@@ -504,16 +493,22 @@ async function fetchFinnhubConcurrent(key, stockList) {
     await Promise.all(promises);
 }
 
+// --- Rendering ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
     const currentList = STATE.watchlists[STATE.currentTab] || [];
-    if (currentList.length === 0) { tbody.innerHTML = '<tr><td colspan="11" class="text-center">Watchlist empty</td></tr>'; return; }
+
+    if (currentList.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center">Watchlist empty</td></tr>'; return;
+    }
 
     let items = currentList.map(sym => STATE.lastData[sym] || { symbol: sym });
+
     const origOrderCb = document.getElementById('orig-order-cb');
-    
-    if (!origOrderCb.checked && STATE.sortCol) {
+    if (origOrderCb.checked || !STATE.sortCol) {
+        // Original Add Order (which matches currentList array)
+    } else {
         items.sort((a, b) => {
             let vA = a[STATE.sortCol], vB = b[STATE.sortCol];
             if (vA == null) return 1; if (vB == null) return -1;
@@ -566,8 +561,14 @@ function renderSkeleton() {
     tbody.innerHTML = currentList.map(() => `<tr><td colspan="11"><div class="skeleton"></div></td></tr>`).join('');
 }
 
+// --- Drag & Drop ---
 let dragSourceEl = null;
-function handleDragStart(e) { dragSourceEl = this; this.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/html', this.innerHTML); }
+function handleDragStart(e) { 
+    dragSourceEl = this; 
+    this.classList.add('dragging'); 
+    e.dataTransfer.effectAllowed = 'move'; 
+    e.dataTransfer.setData('text/html', this.innerHTML); 
+}
 function handleDragOver(e) {
     e.preventDefault(); e.dataTransfer.dropEffect = 'move';
     const tbody = document.getElementById('table-body');
@@ -583,7 +584,10 @@ function handleDragEnd() {
     this.classList.remove('dragging');
     STATE.watchlists[STATE.currentTab] = Array.from(document.getElementById('table-body').children).map(tr => tr.id.replace('row-', ''));
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-    document.getElementById('orig-order-cb').checked = true; STATE.sortCol = null; 
-    updateSortIcons(); renderTable();
+    
+    document.getElementById('orig-order-cb').checked = true;
+    STATE.sortCol = null; 
+    updateSortIcons();
+    renderTable();
 }
 function setupDragAndDrop() { document.getElementById('table-body').addEventListener('dragover', e => e.preventDefault()); }
