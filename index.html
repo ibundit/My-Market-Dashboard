@@ -19,6 +19,14 @@
             
             <div class="controls">
                 <div class="control-group">
+                    <label for="source-select">Data Source:</label>
+                    <select id="source-select">
+                        <option value="twelvedata">Twelve Data (Default)</option>
+                        <option value="finnhub">Finnhub (Alternative)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
                     <input type="text" id="symbol-input" placeholder="e.g. AAPL, BTC-USD" autocomplete="off" />
                     <button id="add-btn" class="btn primary">Add</button>
                 </div>
@@ -43,16 +51,17 @@
             <table id="dashboard-table">
                 <thead>
                     <tr>
-                        <th>Ticker</th>
-                        <th>Name</th>
-                        <th class="text-right">Price</th>
-                        <th class="text-right">Day's Change</th>
-                        <th class="text-right">Day's Change %</th>
-                        <th class="text-right">365 Day's Change</th>
-                        <th class="text-right">1 Year Return</th>
-                        <th class="text-right">52W High</th>
-                        <th class="text-right">52W Low</th>
-                        <th class="text-right">PE</th>
+                        <th style="width: 40px;"></th> <!-- Drag Handle Column -->
+                        <th style="width: 50px;" class="text-center">Logo</th>
+                        <th class="sortable" data-sort="symbol">Ticker <span class="sort-icon"></span></th>
+                        <th class="sortable" data-sort="name">Name <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="price">Price <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changeDay">Day's Change <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changePct">Day's Change % <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="change365">365 Day's Change <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="return1Y">1 Year Return <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="high52">52W High <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="low52">52W Low <span class="sort-icon"></span></th>
                         <th class="text-center">Action</th>
                     </tr>
                 </thead>
