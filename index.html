@@ -19,11 +19,10 @@
             
             <div class="controls">
                 <div class="control-group">
-                    <label for="source-select">Stock API:</label>
-                    <select id="source-select" title="Crypto always uses Binance API (Free, Real-time)">
+                    <label for="source-select">Data Source:</label>
+                    <select id="source-select">
                         <option value="twelvedata">Twelve Data</option>
                         <option value="finnhub">Finnhub</option>
-                        <option value="fmp">FMP (Recommended)</option>
                     </select>
                 </div>
 
@@ -48,8 +47,11 @@
 
         <div id="alerts" class="alerts"></div>
 
+        <!-- Tabs Container -->
         <div class="tabs-wrapper">
-            <div id="tabs-list" class="tabs"></div>
+            <div id="tabs-list" class="tabs">
+                <!-- Rendered via JS -->
+            </div>
             <button id="add-tab-btn" class="btn secondary btn-small" title="Add new watchlist tab">+ New Tab</button>
         </div>
 
@@ -57,14 +59,14 @@
             <table id="dashboard-table">
                 <thead>
                     <tr>
-                        <th style="width: 40px;"></th>
+                        <th style="width: 40px;"></th> <!-- Drag Handle -->
                         <th style="width: 50px;" class="text-center">Logo</th>
                         <th class="sortable" data-sort="symbol">Ticker <span class="sort-icon"></span></th>
                         <th class="sortable text-right" data-sort="price">Price <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="changeDay">Change <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="changePct">Change % <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="change365">365D Change <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="return1Y">1Y Return <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changeDay">Day's Change <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changePct">Day's Change % <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="change365">365 Day's Change <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="return1Y">1 Year Return <span class="sort-icon"></span></th>
                         <th class="sortable text-right" data-sort="high52">52W High <span class="sort-icon"></span></th>
                         <th class="sortable text-right" data-sort="low52">52W Low <span class="sort-icon"></span></th>
                         <th class="text-center">Action</th>
@@ -78,13 +80,14 @@
         
         <footer>
             <div class="footer-info">
-                <span>Data Sources: FMP / Finnhub / Twelve Data (Stocks) | Binance (Crypto)</span>
                 <span>Last Updated: <span id="last-updated-time">—</span></span>
             </div>
         </footer>
     </div>
 
+    <!-- Configuration -->
     <script src="local-config.js"></script>
+    <!-- Application Logic -->
     <script src="script.js"></script>
 </body>
 </html>
