@@ -16,79 +16,45 @@
                     <span id="market-status">Checking connection...</span>
                 </div>
             </div>
-            
             <div class="controls">
                 <div class="control-group">
-                    <label for="source-select">Data Source:</label>
                     <select id="source-select">
                         <option value="twelvedata">Twelve Data</option>
                         <option value="finnhub">Finnhub</option>
                     </select>
                 </div>
-
                 <div class="control-group">
-                    <input type="text" id="symbol-input" placeholder="e.g. NVDA,AMD,BTC" autocomplete="off" title="Type single or comma-separated symbols."/>
+                    <input type="text" id="symbol-input" placeholder="e.g. NVDA,BTC" autocomplete="off"/>
                     <button id="add-btn" class="btn primary">Add</button>
                 </div>
-                
-                <div class="control-group">
-                    <label for="refresh-select">Auto-refresh:</label>
-                    <select id="refresh-select">
-                        <option value="0">Off</option>
-                        <option value="30">30s</option>
-                        <option value="60">1m</option>
-                        <option value="300">5m</option>
-                    </select>
-                </div>
-                
-                <button id="refresh-btn" class="btn secondary">Refresh Now</button>
+                <button id="refresh-btn" class="btn secondary">Refresh</button>
             </div>
         </header>
 
         <div id="alerts" class="alerts"></div>
-
-        <!-- Tabs Container -->
         <div class="tabs-wrapper">
-            <div id="tabs-list" class="tabs">
-                <!-- Rendered via JS -->
-            </div>
-            <button id="add-tab-btn" class="btn secondary btn-small" title="Add new watchlist tab">+ New Tab</button>
+            <div id="tabs-list" class="tabs"></div>
+            <button id="add-tab-btn" class="btn secondary btn-small">+ New Tab</button>
         </div>
 
         <div class="table-container">
             <table id="dashboard-table">
                 <thead>
                     <tr>
-                        <th style="width: 40px;"></th> <!-- Drag Handle -->
+                        <th style="width: 40px;"></th>
                         <th style="width: 50px;" class="text-center">Logo</th>
                         <th class="sortable" data-sort="symbol">Ticker <span class="sort-icon"></span></th>
-                        <th class="sortable" data-sort="name">Name <span class="sort-icon"></span></th>
                         <th class="sortable text-right" data-sort="price">Price <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="changeDay">Day's Change <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="changePct">Day's Change % <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="change365">365 Day's Change <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="return1Y">1 Year Return <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="high52">52W High <span class="sort-icon"></span></th>
-                        <th class="sortable text-right" data-sort="low52">52W Low <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changeDay">Change <span class="sort-icon"></span></th>
+                        <th class="sortable text-right" data-sort="changePct">Change % <span class="sort-icon"></span></th>
                         <th class="text-center">Action</th>
                     </tr>
                 </thead>
-                <tbody id="table-body">
-                    <!-- Rows rendered via JS -->
-                </tbody>
+                <tbody id="table-body"></tbody>
             </table>
         </div>
-        
-        <footer>
-            <div class="footer-info">
-                <span>Last Updated: <span id="last-updated-time">—</span></span>
-            </div>
-        </footer>
     </div>
-
-    <!-- Configuration -->
     <script src="local-config.js"></script>
-    <!-- Application Logic -->
     <script src="script.js"></script>
 </body>
 </html>
