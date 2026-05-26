@@ -1,10 +1,11 @@
 // Application State
 const STATE = {
-    watchlist: JSON.parse(localStorage.getItem('watchlist')) || ['NVDA', 'ANET', 'SPY', 'BTC-USD'],
+    watchlists: {}, // Tab Name -> Array of Symbols
+    currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
     apiSource: localStorage.getItem('apiSource') || 'twelvedata',
     intervalId: null,
-    lastData: {}, // Holds computed, flattened row objects indexed by symbol
+    lastData: {}, // Holds computed row objects
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -15,21 +16,48 @@ const STATE = {
 
 const MAX_CREDITS_PER_MIN = 8; // Free Twelve Data Limit
 
-// Popular stock domain mapping for Clearbit Logos
+// Known crypto tokens to enable shorthand typing (e.g. "BTC" -> "BTC-USD")
+const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI'];
+
+// Explicit mappings for US stocks that don't follow the <ticker>.com pattern perfectly
 const STOCK_DOMAINS = {
     'AAPL': 'apple.com', 'NVDA': 'nvidia.com', 'TSLA': 'tesla.com', 'MSFT': 'microsoft.com',
     'SPY': 'ssga.com', 'ANET': 'arista.com', 'AMZN': 'amazon.com', 'GOOGL': 'google.com',
-    'META': 'meta.com', 'NFLX': 'netflix.com', 'AMD': 'amd.com', 'QQQ': 'invesco.com'
+    'GOOG': 'google.com', 'META': 'meta.com', 'NFLX': 'netflix.com', 'AMD': 'amd.com', 
+    'QQQ': 'invesco.com', 'INTC': 'intel.com', 'BABA': 'alibabagroup.com', 'V': 'visa.com',
+    'JNJ': 'jnj.com', 'WMT': 'walmart.com', 'JPM': 'jpmorganchase.com', 'MA': 'mastercard.com',
+    'PG': 'pg.com', 'HD': 'homedepot.com', 'CVX': 'chevron.com', 'LLY': 'lilly.com',
+    'BAC': 'bankofamerica.com', 'KO': 'coca-colacompany.com'
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    initDataMigrate();
     initApiKeys();
     initUI();
     fetchData();
 });
 
+function initDataMigrate() {
+    let savedLists = JSON.parse(localStorage.getItem('watchlists'));
+    let oldSingleList = JSON.parse(localStorage.getItem('watchlist'));
+    
+    // Migration: If no watchlists object exists, create Default tab
+    if (!savedLists) {
+        savedLists = { "Default": oldSingleList || ['NVDA', 'ANET', 'SPY', 'BTC-USD'] };
+        localStorage.setItem('watchlists', JSON.stringify(savedLists));
+    }
+    
+    STATE.watchlists = savedLists;
+    
+    // Set Current Tab
+    let savedTab = localStorage.getItem('currentTab');
+    if (!savedTab || !STATE.watchlists[savedTab]) {
+        savedTab = Object.keys(STATE.watchlists)[0];
+    }
+    STATE.currentTab = savedTab;
+}
+
 function initApiKeys() {
-    // Sync from local-config if present
     if (window.APP_CONFIG) {
         if (!STATE.keys.twelvedata && window.APP_CONFIG.TWELVE_DATA_API_KEY !== 'PASTE_KEY_HERE') {
             STATE.keys.twelvedata = window.APP_CONFIG.TWELVE_DATA_API_KEY;
@@ -40,8 +68,6 @@ function initApiKeys() {
             localStorage.setItem('FINNHUB_API_KEY', STATE.keys.finnhub);
         }
     }
-
-    // Prompt if chosen source is missing a key
     verifyKeyForCurrentSource();
 }
 
@@ -60,9 +86,11 @@ function initUI() {
     document.getElementById('source-select').value = STATE.apiSource;
     
     // UI Observers
-    document.getElementById('add-btn').addEventListener('click', addSymbol);
-    document.getElementById('symbol-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') addSymbol(); });
+    document.getElementById('add-btn').addEventListener('click', addSymbols);
+    document.getElementById('symbol-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') addSymbols(); });
     document.getElementById('refresh-btn').addEventListener('click', fetchData);
+    
+    document.getElementById('add-tab-btn').addEventListener('click', addNewTab);
     
     document.getElementById('source-select').addEventListener('change', (e) => {
         STATE.apiSource = e.target.value;
@@ -74,16 +102,9 @@ function initUI() {
 
     document.getElementById('refresh-select').addEventListener('change', (e) => {
         const newInterval = parseInt(e.target.value);
-        if (newInterval > 0 && STATE.apiSource === 'twelvedata') {
-            const requiredCredits = STATE.watchlist.length * (60 / newInterval);
-            if (requiredCredits > MAX_CREDITS_PER_MIN) {
-                showAlert(`Twelve Data tier limit restriction. Watchlist requires ${requiredCredits} credits/min. (Max: ${MAX_CREDITS_PER_MIN})`);
-                e.target.value = STATE.refreshInterval;
-                return;
-            }
-        }
         STATE.refreshInterval = newInterval;
-        localStorage.setItem('refreshInterval', newInterval);
+        checkBudgetAndAdjust();
+        localStorage.setItem('refreshInterval', STATE.refreshInterval);
         setupAutoRefresh();
     });
 
@@ -104,7 +125,122 @@ function initUI() {
 
     setupAutoRefresh();
     setupDragAndDrop();
+    renderTabs();
     renderSkeleton();
+}
+
+// --- Tab Management ---
+
+function renderTabs() {
+    const container = document.getElementById('tabs-list');
+    container.innerHTML = '';
+    
+    const tabNames = Object.keys(STATE.watchlists);
+    
+    tabNames.forEach(tabName => {
+        const div = document.createElement('div');
+        div.className = `tab ${tabName === STATE.currentTab ? 'active' : ''}`;
+        
+        // Show delete button only if more than 1 tab exists
+        const showDelete = tabNames.length > 1;
+        
+        div.innerHTML = `
+            <span class="tab-name">${tabName}</span>
+            <span class="tab-action edit" title="Rename" onclick="event.stopPropagation(); renameTab('${tabName}')">✏️</span>
+            ${showDelete ? `<span class="tab-action delete" title="Delete" onclick="event.stopPropagation(); deleteTab('${tabName}')">✕</span>` : ''}
+        `;
+        
+        div.onclick = () => switchTab(tabName);
+        container.appendChild(div);
+    });
+}
+
+function switchTab(tabName) {
+    if (STATE.currentTab === tabName) return;
+    STATE.currentTab = tabName;
+    localStorage.setItem('currentTab', tabName);
+    
+    checkBudgetAndAdjust();
+    
+    STATE.sortCol = null; // reset sort on tab switch
+    updateSortIcons();
+    
+    renderTabs();
+    renderSkeleton();
+    fetchData();
+}
+
+function addNewTab() {
+    const name = prompt("Enter name for the new Watchlist Tab:");
+    if (!name || !name.trim()) return;
+    const cleanName = name.trim();
+    
+    if (STATE.watchlists[cleanName]) {
+        showAlert("A tab with this name already exists.");
+        return;
+    }
+    
+    STATE.watchlists[cleanName] = [];
+    saveWatchlists();
+    switchTab(cleanName);
+}
+
+function renameTab(oldName) {
+    const newName = prompt("Enter new name for tab:", oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    const cleanName = newName.trim();
+    
+    if (STATE.watchlists[cleanName]) {
+        showAlert("A tab with this name already exists.");
+        return;
+    }
+    
+    STATE.watchlists[cleanName] = STATE.watchlists[oldName];
+    delete STATE.watchlists[oldName];
+    
+    if (STATE.currentTab === oldName) {
+        STATE.currentTab = cleanName;
+        localStorage.setItem('currentTab', cleanName);
+    }
+    
+    saveWatchlists();
+    renderTabs();
+}
+
+function deleteTab(tabName) {
+    if (!confirm(`Are you sure you want to delete the tab '${tabName}'?`)) return;
+    
+    delete STATE.watchlists[tabName];
+    
+    if (STATE.currentTab === tabName) {
+        // Switch to the first available tab
+        STATE.currentTab = Object.keys(STATE.watchlists)[0];
+        localStorage.setItem('currentTab', STATE.currentTab);
+    }
+    
+    saveWatchlists();
+    renderTabs();
+    renderSkeleton();
+    fetchData();
+}
+
+function saveWatchlists() {
+    localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+}
+
+// --- Background Core ---
+
+function checkBudgetAndAdjust() {
+    if (STATE.refreshInterval > 0 && STATE.apiSource === 'twelvedata') {
+        const currentList = STATE.watchlists[STATE.currentTab] || [];
+        const requiredCredits = currentList.length * (60 / STATE.refreshInterval);
+        
+        if (requiredCredits > MAX_CREDITS_PER_MIN) {
+            showAlert(`Watchlist size (${currentList.length}) exceeds Twelve Data limit for ${STATE.refreshInterval}s refresh. Auto-refresh turned Off.`);
+            STATE.refreshInterval = 0;
+            document.getElementById('refresh-select').value = '0';
+        }
+    }
 }
 
 function setupAutoRefresh() {
@@ -139,28 +275,46 @@ function updateSortIcons() {
     });
 }
 
-function addSymbol() {
-    const input = document.getElementById('symbol-input');
-    const symbol = input.value.trim().toUpperCase();
-    if (!symbol) return;
-    if (STATE.watchlist.includes(symbol)) return input.value = '';
+function addSymbols() {
+    const inputField = document.getElementById('symbol-input');
+    const rawInput = inputField.value;
+    if (!rawInput.trim()) return;
     
-    STATE.watchlist.push(symbol);
-    localStorage.setItem('watchlist', JSON.stringify(STATE.watchlist));
-    input.value = '';
+    // Split by comma, trim, uppercase, remove empty
+    const symbolsToAdd = rawInput.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
+    const currentList = STATE.watchlists[STATE.currentTab];
+    let addedCount = 0;
+
+    symbolsToAdd.forEach(sym => {
+        // Crypto Shorthand Check
+        if (KNOWN_CRYPTOS.includes(sym)) {
+            sym = sym + '-USD';
+        }
+        
+        if (!currentList.includes(sym)) {
+            currentList.push(sym);
+            addedCount++;
+        }
+    });
     
-    renderSkeleton();
-    fetchData();
+    if (addedCount > 0) {
+        saveWatchlists();
+        checkBudgetAndAdjust();
+        renderSkeleton();
+        fetchData();
+    }
+    
+    inputField.value = '';
 }
 
 window.removeSymbol = function(symbol) {
-    STATE.watchlist = STATE.watchlist.filter(s => s !== symbol);
-    localStorage.setItem('watchlist', JSON.stringify(STATE.watchlist));
+    STATE.watchlists[STATE.currentTab] = STATE.watchlists[STATE.currentTab].filter(s => s !== symbol);
+    saveWatchlists();
     delete STATE.lastData[symbol];
     renderTable();
 };
 
-// Logo URL Helper (Method 1: External Free CDNs)
+// --- Logo System ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     if (isCrypto) {
@@ -169,28 +323,28 @@ function getLogoHtml(symbol) {
         return `<img src="${url}" class="img-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                 <div class="text-logo" style="display:none;">${token.substring(0,2)}</div>`;
     } else {
-        const domain = STOCK_DOMAINS[symbol];
-        if (domain) {
-            return `<img src="https://logo.clearbit.com/${domain}" class="img-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                    <div class="text-logo" style="display:none;">${symbol.substring(0,2)}</div>`;
-        }
-        return `<div class="text-logo">${symbol.substring(0,2)}</div>`;
+        // US Stocks Fallback logic (uses domain map, defaults to <ticker>.com)
+        const domain = STOCK_DOMAINS[symbol] || `${symbol.toLowerCase()}.com`;
+        return `<img src="https://logo.clearbit.com/${domain}" class="img-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div class="text-logo" style="display:none;">${symbol.substring(0,2)}</div>`;
     }
 }
 
-// Data Processing Switchboard
+// --- Data Fetching ---
 async function fetchData() {
     const currentKey = STATE.keys[STATE.apiSource];
+    const currentList = STATE.watchlists[STATE.currentTab] || [];
+    
     if (!currentKey) return updateStatus('red', 'Missing API Key');
-    if (STATE.watchlist.length === 0) return updateStatus('yellow', 'Watchlist Empty');
+    if (currentList.length === 0) return updateStatus('yellow', 'Watchlist Empty');
 
     updateStatus('yellow', 'Fetching...');
     
     try {
         if (STATE.apiSource === 'twelvedata') {
-            await fetchTwelveData(currentKey);
+            await fetchTwelveData(currentKey, currentList);
         } else {
-            await fetchFinnhub(currentKey);
+            await fetchFinnhub(currentKey, currentList);
         }
         document.getElementById('last-updated-time').textContent = new Date().toLocaleTimeString();
         updateStatus('green', 'Connected');
@@ -202,27 +356,25 @@ async function fetchData() {
     }
 }
 
-// Twelve Data Implementation
-async function fetchTwelveData(key) {
-    const formatted = STATE.watchlist.map(s => s.includes('-') ? s.replace('-', '/') : s).join(',');
+async function fetchTwelveData(key, currentList) {
+    const formatted = currentList.map(s => s.includes('-') ? s.replace('-', '/') : s).join(',');
     const res = await fetch(`https://api.twelvedata.com/quote?symbol=${formatted}&apikey=${key}`);
     const data = await res.json();
     
     if (data.status === 'error') throw new Error(data.message);
 
     let norm = {};
-    if (STATE.watchlist.length === 1) {
+    if (currentList.length === 1) {
         const uiSym = data.symbol.replace('/', '-');
         norm[uiSym] = data;
     } else {
         for (const k in data) norm[k.replace('/', '-')] = data[k];
     }
 
-    // Historical Cache processing (1Y Change)
     const today = new Date().toISOString().split('T')[0];
     const oneYearAgoMs = Date.now() - (365 * 24 * 60 * 60 * 1000);
 
-    for (const sym of STATE.watchlist) {
+    for (const sym of currentList) {
         const q = norm[sym];
         if (!q || q.status === 'error') continue;
 
@@ -268,23 +420,19 @@ async function fetchTwelveData(key) {
     }
 }
 
-// Alternative Provider: Finnhub Implementation
-async function fetchFinnhub(key) {
-    for (const sym of STATE.watchlist) {
+async function fetchFinnhub(key, currentList) {
+    for (const sym of currentList) {
         try {
             let finnhubSymbol = sym;
-            // Map simple crypto presentation BTC-USD to Finnhub compatible representation Binances
             if (sym.includes('-')) {
                 const pieces = sym.split('-');
-                finnhubSymbol = `BINANCE:${pieces[0]}${pieces[1]}T`; // e.g. BINANCE:BTCUSDT
+                finnhubSymbol = `BINANCE:${pieces[0]}${pieces[1]}T`; 
             }
 
             const quoteRes = await fetch(`https://finnhub.io/api/v1/quote?symbol=${finnhubSymbol}&token=${key}`);
             const q = await quoteRes.json();
+            if (!q.c) continue;
 
-            if (!q.c) continue; // Skip if invalid profile returned
-
-            // Finnhub doesn't serve asset name inside quote, supply default uppercase naming
             const name = sym.includes('-') ? `${sym.split('-')[0]} Crypto` : `${sym} Equity`;
 
             STATE.lastData[sym] = {
@@ -293,37 +441,35 @@ async function fetchFinnhub(key) {
                 price: q.c,
                 changeDay: q.d,
                 changePct: q.dp,
-                change365: null, // Finnhub core free endpoint does not include historical return
+                change365: null, 
                 return1Y: null,
-                high52: q.h, // Day's boundaries assigned as contextual high/low under free endpoints
+                high52: q.h, 
                 low52: q.l
             };
         } catch (e) { console.error(e); }
     }
 }
 
-// Table Rendering & Multi-Sort
+// --- Rendering ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
 
-    if (STATE.watchlist.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" class="text-center">Watchlist empty</td></tr>';
+    const currentList = STATE.watchlists[STATE.currentTab] || [];
+
+    if (currentList.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="12" class="text-center">Current Watchlist is empty. Add a symbol above.</td></tr>';
         return;
     }
 
-    // Prepare processing array matching current watchlist order
-    let items = STATE.watchlist.map(sym => STATE.lastData[sym] || { symbol: sym });
+    let items = currentList.map(sym => STATE.lastData[sym] || { symbol: sym });
 
-    // Handle Active Header Sorting
     if (STATE.sortCol) {
         items.sort((a, b) => {
             let valA = a[STATE.sortCol];
             let valB = b[STATE.sortCol];
-
             if (valA == null) return 1;
             if (valB == null) return -1;
-
             if (typeof valA === 'string') {
                 return STATE.sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
             } else {
@@ -342,7 +488,6 @@ function createRowElement(item) {
     tr.id = `row-${item.symbol}`;
     tr.draggable = true;
     
-    const err = !item.price;
     const signDay = item.changeDay > 0 ? '+' : '';
     const sign365 = item.change365 > 0 ? '+' : '';
 
@@ -367,7 +512,6 @@ function createRowElement(item) {
         </td>
     `;
     
-    // Wire drag events back into dynamically created nodes
     tr.addEventListener('dragstart', handleDragStart);
     tr.addEventListener('dragover', handleDragOver);
     tr.addEventListener('drop', handleDrop);
@@ -378,11 +522,13 @@ function createRowElement(item) {
 
 function renderSkeleton() {
     const tbody = document.getElementById('table-body');
-    if (STATE.watchlist.length === 0) return;
-    tbody.innerHTML = STATE.watchlist.map(() => `<tr><td colspan="12"><div class="skeleton"></div></td></tr>`).join('');
+    const currentList = STATE.watchlists[STATE.currentTab] || [];
+    
+    if (currentList.length === 0) return;
+    tbody.innerHTML = currentList.map(() => `<tr><td colspan="12"><div class="skeleton"></div></td></tr>`).join('');
 }
 
-// Drag & Drop HTML5 Handler Core
+// --- Drag & Drop ---
 let dragSourceEl = null;
 
 function handleDragStart(e) {
@@ -398,40 +544,27 @@ function handleDragOver(e) {
     
     const tbody = document.getElementById('table-body');
     const children = Array.from(tbody.children);
-    const targetRow = this;
     
-    if (targetRow !== dragSourceEl) {
-        const currentIndex = children.indexOf(dragSourceEl);
-        const targetIndex = children.indexOf(targetRow);
-        
-        if (currentIndex < targetIndex) {
-            tbody.insertBefore(dragSourceEl, targetRow.nextSibling);
-        } else {
-            tbody.insertBefore(dragSourceEl, targetRow);
-        }
+    if (this !== dragSourceEl) {
+        const currIdx = children.indexOf(dragSourceEl);
+        const targetIdx = children.indexOf(this);
+        if (currIdx < targetIdx) { tbody.insertBefore(dragSourceEl, this.nextSibling); } 
+        else { tbody.insertBefore(dragSourceEl, this); }
     }
 }
 
-function handleDrop(e) {
-    e.preventDefault();
-}
+function handleDrop(e) { e.preventDefault(); }
 
 function handleDragEnd() {
     this.classList.remove('dragging');
-    
-    // Persist new ordering schema into original underlying Watchlist Array
     const tbody = document.getElementById('table-body');
-    const newOrder = Array.from(tbody.children).map(tr => tr.id.replace('row-', ''));
+    STATE.watchlists[STATE.currentTab] = Array.from(tbody.children).map(tr => tr.id.replace('row-', ''));
+    saveWatchlists();
     
-    STATE.watchlist = newOrder;
-    localStorage.setItem('watchlist', JSON.stringify(STATE.watchlist));
-    
-    // Clear temporary sorts when manipulating order manually
     STATE.sortCol = null;
     updateSortIcons();
 }
 
 function setupDragAndDrop() {
-    const tbody = document.getElementById('table-body');
-    tbody.addEventListener('dragover', (e) => e.preventDefault());
+    document.getElementById('table-body').addEventListener('dragover', (e) => e.preventDefault());
 }

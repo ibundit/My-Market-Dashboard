@@ -21,13 +21,13 @@
                 <div class="control-group">
                     <label for="source-select">Data Source:</label>
                     <select id="source-select">
-                        <option value="twelvedata">Twelve Data (Default)</option>
-                        <option value="finnhub">Finnhub (Alternative)</option>
+                        <option value="twelvedata">Twelve Data</option>
+                        <option value="finnhub">Finnhub</option>
                     </select>
                 </div>
 
                 <div class="control-group">
-                    <input type="text" id="symbol-input" placeholder="e.g. AAPL, BTC-USD" autocomplete="off" />
+                    <input type="text" id="symbol-input" placeholder="e.g. NVDA,AMD,BTC" autocomplete="off" title="Type single or comma-separated symbols. Crypto shorthand like 'BTC' is supported."/>
                     <button id="add-btn" class="btn primary">Add</button>
                 </div>
                 
@@ -47,11 +47,19 @@
 
         <div id="alerts" class="alerts"></div>
 
+        <!-- Tabs Container -->
+        <div class="tabs-wrapper">
+            <div id="tabs-list" class="tabs">
+                <!-- Rendered via JS -->
+            </div>
+            <button id="add-tab-btn" class="btn secondary btn-small" title="Add new watchlist tab">+ New Tab</button>
+        </div>
+
         <div class="table-container">
             <table id="dashboard-table">
                 <thead>
                     <tr>
-                        <th style="width: 40px;"></th> <!-- Drag Handle Column -->
+                        <th style="width: 40px;"></th> <!-- Drag Handle -->
                         <th style="width: 50px;" class="text-center">Logo</th>
                         <th class="sortable" data-sort="symbol">Ticker <span class="sort-icon"></span></th>
                         <th class="sortable" data-sort="name">Name <span class="sort-icon"></span></th>
