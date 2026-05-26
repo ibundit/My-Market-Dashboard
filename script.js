@@ -1,4 +1,4 @@
-// Application State - Version 11 (Highly Stable & High Performance)
+// Application State - Version 12 (Reverted to V9 Spark Endpoint + Performance/Accuracy Upgrades)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -15,7 +15,7 @@ const STATE = {
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET','BNSOL','TON','TAO'];
 
-// Premium Proxy Rotation Strategy
+// Proxies for Yahoo API Rotation (from v9)
 const PROXIES = [
     'https://api.allorigins.win/raw?url=',
     'https://corsproxy.io/?url=',
@@ -118,6 +118,7 @@ function initUI() {
     renderSkeleton();
 }
 
+// --- Sync ---
 function exportSyncCode() {
     const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
     const code = btoa(JSON.stringify(data));
@@ -139,6 +140,7 @@ function importSyncCode() {
     } catch(e) { showAlert("Failed to import. Invalid Sync Code."); }
 }
 
+// --- Tabs Management ---
 function renderTabs() {
     const container = document.getElementById('tabs-list');
     container.innerHTML = '';
@@ -184,6 +186,7 @@ function deleteTab(tabName) {
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderTabs(); renderSkeleton(); fetchData(true);
 }
 
+// --- Utils ---
 function setupAutoRefresh() {
     if (STATE.intervalId) clearInterval(STATE.intervalId);
     if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(() => fetchData(false), STATE.refreshInterval * 1000);
@@ -253,7 +256,8 @@ async function fetchData(force = false) {
                 if (!key) showAlert(`Missing API Key for FINNHUB`);
                 else fetchPromises.push(fetchFinnhubConcurrent(key, stockSymbols));
             } else if (STATE.apiSource === 'yahoofinance') {
-                fetchPromises.push(fetchYahooFinanceChartAPI(stockSymbols));
+                // Reverted to v9 logic (Spark API) but optimized concurrently
+                fetchPromises.push(fetchYahooFinanceSparkAPI(stockSymbols));
             }
         }
         
@@ -268,7 +272,7 @@ async function fetchData(force = false) {
     }
 }
 
-// Binance Smart Pair Matching System
+// 1. Binance Bulk Fetcher (Smart Pair Matching from v10/v11 - Keeps working for BNSOL etc)
 async function fetchBinanceBulk(cryptoList) {
     try {
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
@@ -294,6 +298,71 @@ async function fetchBinanceBulk(cryptoList) {
             }
         });
     } catch(e) { console.error(`Binance bulk failed`, e); }
+}
+
+// ฟังก์ชันสำรองสำหรับดึงเหรียญที่ไม่อยู่ใน Binance (เช่น L3) พร้อมคำนวณ 52W High/Low เอง
+async function fetchCoinCapFallback(sym, token) {
+    try {
+        // 1. ค้นหา ID ของเหรียญในระบบ CoinCap ก่อน (CoinCap ใช้ชื่อเต็ม เช่น bitcoin, layer3)
+        const searchRes = await fetch(`https://api.coincap.io/v2/assets?search=${token}&limit=1`);
+        if(!searchRes.ok) return;
+        const searchJson = await searchRes.json();
+        
+        if (searchJson.data && searchJson.data.length > 0) {
+            const coinData = searchJson.data[0];
+            const coinId = coinData.id; // จะได้ชื่อ ID เช่น 'layer3'
+            
+            if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
+            
+            const currentPrice = parseFloat(coinData.priceUsd);
+            const changePct = parseFloat(coinData.changePercent24Hr);
+            
+            STATE.lastData[sym].symbol = sym;
+            STATE.lastData[sym].price = currentPrice;
+            STATE.lastData[sym].changePct = changePct;
+            STATE.lastData[sym].changeDay = currentPrice - (currentPrice / (1 + (changePct/100)));
+
+            // 2. ดึงข้อมูลประวัติย้อนหลัง 1 ปี (365 วัน) เพื่อมาคำนวณ 52W High/Low
+            const now = Date.now();
+            const oneYearAgo = now - (365 * 24 * 60 * 60 * 1000);
+            
+            try {
+                // เรียก API ประวัติราคาแบบรายวัน (interval=d1) ย้อนหลัง 1 ปี
+                const histRes = await fetch(`https://api.coincap.io/v2/assets/${coinId}/history?interval=d1&start=${oneYearAgo}&end=${now}`);
+                if (histRes.ok) {
+                    const histJson = await histRes.json();
+                    const historyData = histJson.data;
+                    
+                    if (historyData && historyData.length > 0) {
+                        // ดึงราคาปิดของทุกวันออกมาใส่ Array
+                        const validPrices = historyData.map(item => parseFloat(item.priceUsd));
+                        
+                        // คำนวณ 52W High / Low โดยเอา Array มาหาค่า Max/Min (รวมราคาปัจจุบันเข้าไปด้วย)
+                        const high52 = Math.max(...validPrices, currentPrice);
+                        const low52 = Math.min(...validPrices, currentPrice);
+                        
+                        // คำนวณ 1Y Return และ 365D Change
+                        const price1Y = validPrices[0]; // ราคาของวันแรกสุดในข้อมูล (1 ปีที่แล้ว)
+                        const change365 = currentPrice - price1Y;
+                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                        
+                        // บันทึกค่าลง State
+                        STATE.lastData[sym].high52 = high52;
+                        STATE.lastData[sym].low52 = low52;
+                        STATE.lastData[sym].change365 = change365;
+                        STATE.lastData[sym].return1Y = return1Y;
+                    }
+                }
+            } catch(histError) { 
+                console.error(`Failed to fetch history for ${coinId}`, histError); 
+            }
+            
+            // สั่งอัปเดตตาราง
+            renderTable();
+        }
+    } catch(e) { 
+        console.error(`CoinCap fallback failed for ${token}`, e); 
+    }
 }
 
 async function fetchBinanceHistorical(sym, pair) {
@@ -324,86 +393,101 @@ async function fetchBinanceHistorical(sym, pair) {
     } catch(e){}
 }
 
-// Super-Stable Concurrent Chart-Based Yahoo Fetch Engine (Fills ALL columns perfectly with zero throttling blocks)
-async function fetchYahooFinanceChartAPI(stockList) {
-    if (stockList.length === 0) return;
+// 2. REVERTED TO V9: Yahoo Finance Spark API (with High Performance Concurrency & Accuracy Fix)
+const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    // Concurrently fetch all stocks for maximum network throughput speed
-    const promises = stockList.map(async (symbol) => {
-        let success = false;
-        let attempts = 0;
+async function fetchYahooFinanceSparkAPI(stockList) {
+    if(stockList.length === 0) return;
+    
+    const chunkSize = 15; // Safe chunk size for URLs
+    const batchPromises = [];
+    
+    for (let i = 0; i < stockList.length; i += chunkSize) {
+        const chunk = stockList.slice(i, i + chunkSize);
         
-        while (!success && attempts < PROXIES.length * 2) {
-            const proxyUrl = PROXIES[proxyIndex];
-            // Load-balance between query1 and query2 servers to avoid rate limiting blocks completely
-            const yahooHost = attempts % 2 === 0 ? 'query1.finance.yahoo.com' : 'query2.finance.yahoo.com';
-            const targetUrl = encodeURIComponent(`https://${yahooHost}/v8/finance/chart/${symbol}?range=1y&interval=1d`);
-            
-            try {
-                const res = await fetch(proxyUrl + targetUrl);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                
-                const json = await res.json();
-                const chartData = json?.chart?.result?.[0];
-                
-                if (chartData) {
-                    const meta = chartData.meta;
-                    const quotes = chartData.indicators?.quote?.[0];
-                    
-                    const currentPrice = meta.regularMarketPrice;
-                    const previousClose = meta.previousClose || meta.chartPreviousClose;
-                    
-                    if (currentPrice === undefined || currentPrice === null) throw new Error("Missing stock price");
+        // Stagger requests to avoid 429 Rate Limit from proxy (e.g. 0ms, 300ms, 600ms)
+        const staggerDelay = (i / chunkSize) * 300; 
+        
+        const p = delay(staggerDelay).then(() => fetchYahooChunk(chunk));
+        batchPromises.push(p);
+    }
+    
+    await Promise.all(batchPromises);
+}
 
-                    // 100% Accurate Daily Change calculations relative to the official closing base
-                    const changeDay = currentPrice - previousClose;
-                    const changePct = previousClose ? (changeDay / previousClose) * 100 : 0;
+async function fetchYahooChunk(chunk) {
+    const symbols = chunk.join(',');
+    // Reverting exactly to the v9 endpoint
+    const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
+    
+    let success = false;
+    let attempts = 0;
+    
+    while (!success && attempts < PROXIES.length) {
+        const proxyUrl = PROXIES[proxyIndex];
+        try {
+            const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            
+            let data = await res.json();
+            if (proxyUrl.includes('allorigins') && data.contents) {
+                data = JSON.parse(data.contents);
+            }
+            
+            if(data && data.spark && data.spark.result) {
+                data.spark.result.forEach(item => {
+                    const sym = item.symbol;
+                    if(!item.response || !item.response[0] || !item.response[0].indicators) return;
                     
-                    // Filter arrays cleanly to remove any null chart gaps
-                    const closePrices = quotes?.close?.filter(p => p !== null && p !== undefined) || [];
-                    const highPrices = quotes?.high?.filter(p => p !== null && p !== undefined) || [];
-                    const lowPrices = quotes?.low?.filter(p => p !== null && p !== undefined) || [];
+                    const meta = item.response[0].meta;
+                    const closePrices = item.response[0].indicators.quote[0].close;
                     
-                    // Bulletproof 52-Week High and Low lookups directly scanned from the full year dataset array
-                    const high52 = meta.fiftyTwoWeekHigh || (highPrices.length > 0 ? Math.max(...highPrices) : currentPrice);
-                    const low52 = meta.fiftyTwoWeekLow || (lowPrices.length > 0 ? Math.min(...lowPrices) : currentPrice);
+                    if(!closePrices || closePrices.length === 0) return;
                     
-                    // 1-Year Returns accurately computed from the array's starting point price
-                    let change365 = null;
-                    let return1Y = null;
-                    if (closePrices.length > 0) {
-                        const price1Y = closePrices[0];
-                        change365 = currentPrice - price1Y;
-                        return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                    }
+                    // Filter out nulls
+                    const validPrices = closePrices.filter(p => p !== null && p !== undefined);
+                    if(validPrices.length === 0) return;
                     
-                    // Commit to core state engine
-                    STATE.lastData[symbol] = {
-                        symbol: symbol,
+                    // EXACT ACCURACY CALCULATIONS
+                    const currentPrice = meta.regularMarketPrice;
+                    const prevClose = meta.previousClose || meta.chartPreviousClose;
+                    
+                    // Change & Change % (Daily)
+                    const changeDay = currentPrice - prevClose;
+                    const changePct = prevClose ? (changeDay / prevClose) * 100 : 0;
+                    
+                    // 1Y Return & 365D Change
+                    const price1Y = validPrices[0]; // Oldest price from 1 year ago
+                    const change365 = currentPrice - price1Y;
+                    const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                    
+                    // 52W High / Low (calculated strictly from all valid array data + current price)
+                    const high52 = Math.max(...validPrices, currentPrice);
+                    const low52 = Math.min(...validPrices, currentPrice);
+                    
+                    STATE.lastData[sym] = {
+                        symbol: sym,
                         price: currentPrice,
                         changeDay: changeDay,
                         changePct: changePct,
-                        high52: high52,
-                        low52: low52,
                         change365: change365,
-                        return1Y: return1Y
+                        return1Y: return1Y,
+                        high52: high52,
+                        low52: low52
                     };
-                    
-                    success = true;
-                } else {
-                    throw new Error("Invalid Yahoo parsing structure");
-                }
-            } catch (err) {
-                // Instantly cycle proxy index on errors to fetch seamless data
-                proxyIndex = (proxyIndex + 1) % PROXIES.length;
-                attempts++;
+                });
+                success = true;
+            } else {
+                throw new Error("Invalid Yahoo format");
             }
+        } catch (e) {
+            proxyIndex = (proxyIndex + 1) % PROXIES.length;
+            attempts++;
         }
-    });
-
-    await Promise.all(promises);
+    }
 }
 
+// 3. Finnhub Concurrent Fetcher (Fast)
 async function fetchFinnhubConcurrent(key, stockList) {
     const promises = stockList.map(async (sym) => {
         try {
