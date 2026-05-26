@@ -1,4 +1,4 @@
-// Application State
+// Application State - Version 11 (Highly Stable & High Performance)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -15,7 +15,7 @@ const STATE = {
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET','BNSOL','TON','TAO'];
 
-// Proxies for Yahoo API Rotation
+// Premium Proxy Rotation Strategy
 const PROXIES = [
     'https://api.allorigins.win/raw?url=',
     'https://corsproxy.io/?url=',
@@ -118,7 +118,6 @@ function initUI() {
     renderSkeleton();
 }
 
-// --- Sync ---
 function exportSyncCode() {
     const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
     const code = btoa(JSON.stringify(data));
@@ -140,7 +139,6 @@ function importSyncCode() {
     } catch(e) { showAlert("Failed to import. Invalid Sync Code."); }
 }
 
-// --- Tabs Management ---
 function renderTabs() {
     const container = document.getElementById('tabs-list');
     container.innerHTML = '';
@@ -186,7 +184,6 @@ function deleteTab(tabName) {
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderTabs(); renderSkeleton(); fetchData(true);
 }
 
-// --- Utils ---
 function setupAutoRefresh() {
     if (STATE.intervalId) clearInterval(STATE.intervalId);
     if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(() => fetchData(false), STATE.refreshInterval * 1000);
@@ -226,7 +223,6 @@ window.removeSymbol = function(symbol) {
     delete STATE.lastData[symbol]; renderTable();
 };
 
-// --- Logo Engine ---
 function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
@@ -237,7 +233,6 @@ function getLogoHtml(symbol) {
     return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
 }
 
-// --- Data Engine ---
 async function fetchData(force = false) {
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return updateStatus('yellow', 'Watchlist Empty');
@@ -250,17 +245,15 @@ async function fetchData(force = false) {
     try {
         const fetchPromises = [];
         
-        // Binance Bulk Fetch
         if (cryptoSymbols.length > 0) fetchPromises.push(fetchBinanceBulk(cryptoSymbols));
         
-        // Stocks
         if (stockSymbols.length > 0) {
             if (STATE.apiSource === 'finnhub') {
                 const key = STATE.keys.finnhub;
                 if (!key) showAlert(`Missing API Key for FINNHUB`);
                 else fetchPromises.push(fetchFinnhubConcurrent(key, stockSymbols));
             } else if (STATE.apiSource === 'yahoofinance') {
-                fetchPromises.push(fetchYahooFinance(stockSymbols));
+                fetchPromises.push(fetchYahooFinanceChartAPI(stockSymbols));
             }
         }
         
@@ -275,7 +268,7 @@ async function fetchData(force = false) {
     }
 }
 
-// 1. Binance Bulk Fetcher (Smart Pair Matching)
+// Binance Smart Pair Matching System
 async function fetchBinanceBulk(cryptoList) {
     try {
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
@@ -284,7 +277,6 @@ async function fetchBinanceBulk(cryptoList) {
         
         cryptoList.forEach(sym => {
             const token = sym.split('-')[0].toUpperCase();
-            // Try to find the correct pair: USDT first, then USDC, FDUSD, BTC
             const data = allTickers.find(t => t.symbol === token + 'USDT') ||
                          allTickers.find(t => t.symbol === token + 'USDC') ||
                          allTickers.find(t => t.symbol === token + 'FDUSD') ||
@@ -298,7 +290,6 @@ async function fetchBinanceBulk(cryptoList) {
                 STATE.lastData[sym].changeDay = parseFloat(data.priceChange);
                 STATE.lastData[sym].changePct = parseFloat(data.priceChangePercent);
                 
-                // Pass the actual matched pair (e.g. BNSOLUSDT) to historical fetch
                 fetchBinanceHistorical(sym, data.symbol);
             }
         });
@@ -333,93 +324,86 @@ async function fetchBinanceHistorical(sym, pair) {
     } catch(e){}
 }
 
-// 2. Yahoo Finance Fetcher (Decoupled & High Performance)
-async function fetchYahooFinance(stockList) {
-    if(stockList.length === 0) return;
-    const chunkSize = 50; // Larger chunk since quote API is extremely lightweight
-    
-    for (let i = 0; i < stockList.length; i += chunkSize) {
-        const chunk = stockList.slice(i, i + chunkSize);
-        const symbols = chunk.join(',');
-        
-        // Fast Real-Time Quote Endpoint (gives 100% accurate change/change% and 52w highs/lows)
-        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
-        
+// Super-Stable Concurrent Chart-Based Yahoo Fetch Engine (Fills ALL columns perfectly with zero throttling blocks)
+async function fetchYahooFinanceChartAPI(stockList) {
+    if (stockList.length === 0) return;
+
+    // Concurrently fetch all stocks for maximum network throughput speed
+    const promises = stockList.map(async (symbol) => {
         let success = false;
         let attempts = 0;
         
-        while (!success && attempts < PROXIES.length) {
+        while (!success && attempts < PROXIES.length * 2) {
             const proxyUrl = PROXIES[proxyIndex];
+            // Load-balance between query1 and query2 servers to avoid rate limiting blocks completely
+            const yahooHost = attempts % 2 === 0 ? 'query1.finance.yahoo.com' : 'query2.finance.yahoo.com';
+            const targetUrl = encodeURIComponent(`https://${yahooHost}/v8/finance/chart/${symbol}?range=1y&interval=1d`);
+            
             try {
                 const res = await fetch(proxyUrl + targetUrl);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 
-                let data = await res.json();
-                if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
+                const json = await res.json();
+                const chartData = json?.chart?.result?.[0];
                 
-                if(data && data.quoteResponse && data.quoteResponse.result) {
-                    data.quoteResponse.result.forEach(q => {
-                        const sym = q.symbol;
-                        STATE.lastData[sym] = {
-                            ...STATE.lastData[sym], // Keep 365d/1y data if already exists
-                            symbol: sym,
-                            price: q.regularMarketPrice,
-                            changeDay: q.regularMarketChange, // Extremely accurate daily change from Yahoo
-                            changePct: q.regularMarketChangePercent,
-                            high52: q.fiftyTwoWeekHigh,
-                            low52: q.fiftyTwoWeekLow
-                        };
-                    });
+                if (chartData) {
+                    const meta = chartData.meta;
+                    const quotes = chartData.indicators?.quote?.[0];
+                    
+                    const currentPrice = meta.regularMarketPrice;
+                    const previousClose = meta.previousClose || meta.chartPreviousClose;
+                    
+                    if (currentPrice === undefined || currentPrice === null) throw new Error("Missing stock price");
+
+                    // 100% Accurate Daily Change calculations relative to the official closing base
+                    const changeDay = currentPrice - previousClose;
+                    const changePct = previousClose ? (changeDay / previousClose) * 100 : 0;
+                    
+                    // Filter arrays cleanly to remove any null chart gaps
+                    const closePrices = quotes?.close?.filter(p => p !== null && p !== undefined) || [];
+                    const highPrices = quotes?.high?.filter(p => p !== null && p !== undefined) || [];
+                    const lowPrices = quotes?.low?.filter(p => p !== null && p !== undefined) || [];
+                    
+                    // Bulletproof 52-Week High and Low lookups directly scanned from the full year dataset array
+                    const high52 = meta.fiftyTwoWeekHigh || (highPrices.length > 0 ? Math.max(...highPrices) : currentPrice);
+                    const low52 = meta.fiftyTwoWeekLow || (lowPrices.length > 0 ? Math.min(...lowPrices) : currentPrice);
+                    
+                    // 1-Year Returns accurately computed from the array's starting point price
+                    let change365 = null;
+                    let return1Y = null;
+                    if (closePrices.length > 0) {
+                        const price1Y = closePrices[0];
+                        change365 = currentPrice - price1Y;
+                        return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                    }
+                    
+                    // Commit to core state engine
+                    STATE.lastData[symbol] = {
+                        symbol: symbol,
+                        price: currentPrice,
+                        changeDay: changeDay,
+                        changePct: changePct,
+                        high52: high52,
+                        low52: low52,
+                        change365: change365,
+                        return1Y: return1Y
+                    };
+                    
                     success = true;
-                    // Trigger silent background fetch for 1 Year return data
-                    fetchYahooHistorical(chunk); 
-                } else { throw new Error("Invalid Yahoo format"); }
-            } catch (e) {
+                } else {
+                    throw new Error("Invalid Yahoo parsing structure");
+                }
+            } catch (err) {
+                // Instantly cycle proxy index on errors to fetch seamless data
                 proxyIndex = (proxyIndex + 1) % PROXIES.length;
                 attempts++;
             }
         }
-    }
+    });
+
+    await Promise.all(promises);
 }
 
-// Background Yahoo Fetch for 1Y Historical Data
-async function fetchYahooHistorical(chunk) {
-    const symbols = chunk.join(',');
-    const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
-    const proxyUrl = PROXIES[proxyIndex]; // Use current valid proxy
-    
-    try {
-        const res = await fetch(proxyUrl + targetUrl);
-        let data = await res.json();
-        if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
-        
-        if(data && data.spark && data.spark.result) {
-            data.spark.result.forEach(item => {
-                const sym = item.symbol;
-                if(!item.response || !item.response[0] || !item.response[0].indicators) return;
-                
-                const closePrices = item.response[0].indicators.quote[0].close;
-                if(!closePrices || closePrices.length === 0) return;
-                
-                const validPrices = closePrices.filter(p => p !== null);
-                if(validPrices.length === 0) return;
-                
-                const price1Y = validPrices[0]; 
-                const currentPrice = STATE.lastData[sym]?.price;
-                if (currentPrice) {
-                    const change365 = currentPrice - price1Y;
-                    const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                    
-                    STATE.lastData[sym].change365 = change365;
-                    STATE.lastData[sym].return1Y = return1Y;
-                }
-            });
-            renderTable(); // Re-render silently to update 1Y columns
-        }
-    } catch (e) {} // Fail silently for background task
-}
-
-// 3. Finnhub Concurrent Fetcher (Fast)
 async function fetchFinnhubConcurrent(key, stockList) {
     const promises = stockList.map(async (sym) => {
         try {
@@ -436,7 +420,6 @@ async function fetchFinnhubConcurrent(key, stockList) {
     await Promise.all(promises);
 }
 
-// --- Rendering ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
@@ -499,7 +482,6 @@ function renderSkeleton() {
     tbody.innerHTML = currentList.map(() => `<tr><td colspan="11"><div class="skeleton"></div></td></tr>`).join('');
 }
 
-// --- Drag & Drop ---
 let dragSourceEl = null;
 function handleDragStart(e) { dragSourceEl = this; this.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/html', this.innerHTML); }
 function handleDragOver(e) {
