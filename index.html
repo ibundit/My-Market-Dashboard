@@ -10,7 +10,7 @@
     <div class="container">
         <header>
             <div class="title-section">
-                <h1>Market Dashboard <span style="font-size: 14px; color: var(--accent-color);">v16</span></h1>
+                <h1>Market Dashboard <span style="font-size: 14px; color: var(--accent-color);">v17</span></h1>
                 <div class="status-indicator">
                     <span id="connection-dot" class="dot green"></span>
                     <span id="market-status">Checking connection...</span>
@@ -18,14 +18,6 @@
             </div>
             
             <div class="controls">
-                <div class="control-group">
-                    <label for="source-select">Stock API:</label>
-                    <select id="source-select" title="Crypto always uses Binance API (Free, Real-time)">
-                        <option value="yahoofinance">Yahoo Finance + Finnhub (Hybrid)</option>
-                        <option value="finnhub">Finnhub + Yahoo Finance (Hybrid)</option>
-                    </select>
-                </div>
-
                 <div class="control-group">
                     <input type="text" id="symbol-input" placeholder="e.g. NVDA,AMD,BTC" autocomplete="off" title="Type single or comma-separated symbols."/>
                     <button id="add-btn" class="btn primary">Add</button>
@@ -80,7 +72,7 @@
         
         <footer>
             <div class="footer-info">
-                <span>Data Sources: Yahoo Finance / Finnhub (Stocks) | Binance / CoinGecko (Crypto)</span>
+                <span>Data Engine: Finnhub + Yahoo Finance (Hybrid) | Binance + CoinGecko Premium Premium Fallback</span>
                 <span>Last Updated: <span id="last-updated-time">—</span></span>
             </div>
             <div class="sync-controls">

@@ -1,11 +1,11 @@
-// Application State - Version 16 (Hybrid Yahoo/Finnhub + Improved L3 CoinGecko Fallback)
+// Application State - Version 17 (High Performance Finnhub+Yahoo Hybrid & Premium Transparent Crypto Logos)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
-    apiSource: localStorage.getItem('apiSource') || 'yahoofinance',
+    apiSource: 'finnhub', // Hardcoded to optimized hybrid engine
     intervalId: null,
-    lastData: {}, // GLOBAL CACHE for instant tab switching
+    lastData: {}, // Global cache
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
     initApiKeys();
     initUI();
-    fetchDataAllTabs(true); // Fetch all symbols across all tabs at startup
+    fetchDataAllTabs(true);
 });
 
 function initDataMigrate() {
@@ -44,31 +44,26 @@ function initDataMigrate() {
 
 function initApiKeys() {
     if (window.APP_CONFIG) {
-        ['FINNHUB_API_KEY'].forEach(key => {
-            const stateKey = key.split('_')[0].toLowerCase();
-            if (!STATE.keys[stateKey] && window.APP_CONFIG[key] !== 'PASTE_KEY_HERE') {
-                STATE.keys[stateKey] = window.APP_CONFIG[key];
-                localStorage.setItem(key, STATE.keys[stateKey]);
-            }
-        });
+        if (!STATE.keys.finnhub && window.APP_CONFIG.FINNHUB_API_KEY !== 'PASTE_KEY_HERE') {
+            STATE.keys.finnhub = window.APP_CONFIG.FINNHUB_API_KEY;
+            localStorage.setItem('FINNHUB_API_KEY', STATE.keys.finnhub);
+        }
     }
     verifyKeyForCurrentSource();
 }
 
 function verifyKeyForCurrentSource() {
-    const s = STATE.apiSource;
-    if (s === 'finnhub' && !STATE.keys[s]) {
+    if (!STATE.keys.finnhub) {
         const key = prompt(`Enter Finnhub API Key:`);
         if (key) { 
-            STATE.keys[s] = key; 
-            localStorage.setItem(`FINNHUB_API_KEY`, key); 
+            STATE.keys.finnhub = key.trim(); 
+            localStorage.setItem(`FINNHUB_API_KEY`, STATE.keys.finnhub); 
         }
     }
 }
 
 function initUI() {
     document.getElementById('refresh-select').value = STATE.refreshInterval;
-    document.getElementById('source-select').value = STATE.apiSource;
     
     document.getElementById('add-btn').addEventListener('click', addSymbols);
     document.getElementById('symbol-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') addSymbols(); });
@@ -77,14 +72,6 @@ function initUI() {
     
     document.getElementById('export-btn').addEventListener('click', exportSyncCode);
     document.getElementById('import-btn').addEventListener('click', importSyncCode);
-
-    document.getElementById('source-select').addEventListener('change', (e) => {
-        STATE.apiSource = e.target.value;
-        localStorage.setItem('apiSource', STATE.apiSource);
-        verifyKeyForCurrentSource();
-        renderSkeleton();
-        fetchDataAllTabs(true);
-    });
 
     document.getElementById('refresh-select').addEventListener('change', (e) => {
         STATE.refreshInterval = parseInt(e.target.value);
@@ -116,7 +103,6 @@ function initUI() {
     renderTabs();
 }
 
-// --- Tabs Management (Zero Latency Switch) ---
 function renderTabs() {
     const container = document.getElementById('tabs-list');
     container.innerHTML = '';
@@ -144,7 +130,7 @@ function switchTab(tabName) {
     document.getElementById('orig-order-cb').checked = true;
     updateSortIcons(); 
     renderTabs(); 
-    renderTable(); // Renders instantly from cache, no network fetch here
+    renderTable(); 
 }
 
 function addNewTab() {
@@ -208,16 +194,36 @@ window.removeSymbol = function(symbol) {
 };
 
 function getLogoHtml(symbol) {
-    const isCrypto = symbol.includes('-') || symbol.includes('/');
-    const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
-    let url = isCrypto 
-        ? `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`
+    const isCrypto = symbol.includes('-');
+    const cleanSym = isCrypto ? symbol.split('-')[0].toUpperCase() : symbol.toUpperCase();
+    
+    // 1. If explicit transparent premium CoinGecko logo was fetched, use it first
+    if (STATE.lastData[symbol] && STATE.lastData[symbol].logoUrl) {
+        return `<img src="${STATE.lastData[symbol].logoUrl}" class="img-logo" onerror="handleLogoError(this, '${cleanSym}', ${isCrypto})">`;
+    }
+
+    // 2. High Quality Default Multi-layer Fallback Pipeline (Transparent)
+    let primaryUrl = isCrypto 
+        ? `https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color/${cleanSym.toLowerCase()}.png`
         : `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
-    const fallbackUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
-    return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
+
+    return `<img src="${primaryUrl}" class="img-logo" onerror="handleLogoError(this, '${cleanSym}', ${isCrypto})">`;
 }
 
-// --- GLOBAL FETCH: Fetch all symbols across all tabs concurrently ---
+window.handleLogoError = function(img, cleanSym, isCrypto) {
+    const step = img.getAttribute('data-fallback-step') || '0';
+    if (step === '0') {
+        img.setAttribute('data-fallback-step', '1');
+        img.src = isCrypto 
+            ? `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`
+            : `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
+    } else if (step === '1') {
+        img.setAttribute('data-fallback-step', '2');
+        img.src = `https://api.dicebear.com/7.x/initials/svg?seed=${cleanSym}&backgroundColor=1e293b&textColor=f8fafc`;
+    }
+};
+
+// --- HIGH PERFORMANCE GLOBAL FETCH ENGINE ---
 async function fetchDataAllTabs(showStatusLoader = false) {
     const allSymbols = new Set();
     Object.values(STATE.watchlists).forEach(list => list.forEach(sym => allSymbols.add(sym)));
@@ -236,13 +242,11 @@ async function fetchDataAllTabs(showStatusLoader = false) {
         
         if (stocks.length > 0) {
             const currentKey = STATE.keys.finnhub;
-            if (STATE.apiSource === 'yahoofinance') {
-                // Yahoo V9 (Spark) Main + Finnhub Fallback for Change
-                promises.push(fetchYahooSparkWithFinnhubFallback(stocks, currentKey));
-            } else if (STATE.apiSource === 'finnhub') {
-                // Finnhub Main + Yahoo V9 Fallback for 52W/365D
-                if (!currentKey) showAlert(`Missing API Key for FINNHUB`);
-                else promises.push(fetchFinnhubWithYahooFallback(stocks, currentKey));
+            if (!currentKey) {
+                showAlert(`Missing API Key for FINNHUB`);
+                verifyKeyForCurrentSource();
+            } else {
+                promises.push(fetchFinnhubWithYahooFallback(stocks, currentKey));
             }
         }
         
@@ -258,28 +262,46 @@ async function fetchDataAllTabs(showStatusLoader = false) {
     }
 }
 
-// Helper: Delay to stagger fetches
-const delay = ms => new Promise(res => setTimeout(res, ms));
+// --- FULLY PARALLEL HYBRID DATA PIPELINE (MAXIMUM SPEED PERFORMANCE) ---
+async function fetchFinnhubWithYahooFallback(stockList, finnhubKey) {
+    if (!finnhubKey || stockList.length === 0) return;
+    
+    // Fire ALL requests concurrently to eliminate sequential network blocking bottlenecks
+    const finnhubPromises = stockList.map(async (sym) => {
+        try {
+            const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
+            const q = await res.json();
+            if (q.c) {
+                if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                STATE.lastData[sym].price = q.c;
+                STATE.lastData[sym].changeDay = q.d;
+                STATE.lastData[sym].changePct = q.dp;
+            }
+        } catch(e) {}
+    });
 
-// --- 1. YAHOO SPARK + FINNHUB HYBRID (Based on V9 Logic) ---
-async function fetchYahooSparkWithFinnhubFallback(stockList, finnhubKey) {
+    const yahooPromise = fetchYahooSparkWithFinnhubFallback(stockList, finnhubKey, false);
+    
+    // Resolve everything in parallel execution
+    await Promise.all([...finnhubPromises, yahooPromise]);
+}
+
+async function fetchYahooSparkWithFinnhubFallback(stockList, finnhubKey, yahooPrimary = false) {
     if(stockList.length === 0) return;
     
-    const chunkSize = 15;
+    const chunkSize = 20; // Expanded chunk sizes to reduce proxy roundtrips
     const batchPromises = [];
     
     for (let i = 0; i < stockList.length; i += chunkSize) {
         const chunk = stockList.slice(i, i + chunkSize);
-        const staggerDelay = (i / chunkSize) * 300; 
-        const p = delay(staggerDelay).then(() => fetchYahooChunk(chunk, finnhubKey, true)); // true = Yahoo is primary
-        batchPromises.push(p);
+        // Execute chunk fetches instantly in parallel, eliminating artificial delay blockings
+        batchPromises.push(fetchYahooChunk(chunk, finnhubKey, yahooPrimary));
     }
     
     await Promise.all(batchPromises);
 }
 
-// Fetch a chunk from Yahoo V9 Spark API
-async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = true) {
+async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = false) {
     const symbols = chunk.join(',');
     const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
     
@@ -298,8 +320,6 @@ async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = true) {
             }
             
             if(data && data.spark && data.spark.result) {
-                const finnhubPromises = [];
-                
                 data.spark.result.forEach(item => {
                     const sym = item.symbol;
                     if(!item.response || !item.response[0] || !item.response[0].indicators) return;
@@ -308,13 +328,10 @@ async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = true) {
                     const closePrices = item.response[0].indicators.quote[0].close;
                     
                     if(!closePrices || closePrices.length === 0) return;
-                    
                     const validPrices = closePrices.filter(p => p !== null && p !== undefined);
                     if(validPrices.length === 0) return;
                     
                     const currentPrice = meta.regularMarketPrice;
-                    
-                    // V9 logic for 52W/1Y (Always used from Yahoo because it has historical data)
                     const price1Y = validPrices[0];
                     const change365 = currentPrice - price1Y;
                     const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
@@ -322,49 +339,21 @@ async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = true) {
                     const high52 = Math.max(...validPrices, currentPrice);
                     const low52 = Math.min(...validPrices, currentPrice);
 
-                    // Initialize data state
                     if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                    STATE.lastData[sym].price = currentPrice;
                     STATE.lastData[sym].change365 = change365;
                     STATE.lastData[sym].return1Y = return1Y;
                     STATE.lastData[sym].high52 = high52;
                     STATE.lastData[sym].low52 = low52;
 
-                    // If Yahoo is primary, try to calculate Change/Pct from Yahoo
-                    let changeDay = null;
-                    let changePct = null;
-                    
                     if (yahooPrimary) {
+                        STATE.lastData[sym].price = currentPrice;
                         const prevClose = meta.previousClose || meta.chartPreviousClose;
                         if (prevClose) {
-                            changeDay = currentPrice - prevClose;
-                            changePct = (changeDay / prevClose) * 100;
+                            STATE.lastData[sym].changeDay = currentPrice - prevClose;
+                            STATE.lastData[sym].changePct = (STATE.lastData[sym].changeDay / prevClose) * 100;
                         }
-                    }
-
-                    // If we couldn't get Change/Pct from Yahoo (or Finnhub is primary), fetch from Finnhub
-                    if (changeDay === null || changePct === null || !yahooPrimary) {
-                        if (finnhubKey) {
-                            finnhubPromises.push(
-                                fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`)
-                                    .then(r => r.json())
-                                    .then(q => {
-                                        if (q.c) {
-                                            STATE.lastData[sym].price = q.c; // Overwrite with Finnhub price if Finnhub is primary for quote
-                                            STATE.lastData[sym].changeDay = q.d;
-                                            STATE.lastData[sym].changePct = q.dp;
-                                        }
-                                    }).catch(e => {})
-                            );
-                        }
-                    } else {
-                        STATE.lastData[sym].changeDay = changeDay;
-                        STATE.lastData[sym].changePct = changePct;
                     }
                 });
-                
-                // Wait for any Finnhub fallback fetches to complete for this chunk
-                await Promise.all(finnhubPromises);
                 success = true;
             } else {
                 throw new Error("Invalid Yahoo format");
@@ -376,48 +365,21 @@ async function fetchYahooChunk(chunk, finnhubKey, yahooPrimary = true) {
     }
 }
 
-// --- 2. FINNHUB MAIN + YAHOO FALLBACK HYBRID ---
-async function fetchFinnhubWithYahooFallback(stockList, finnhubKey) {
-    if (!finnhubKey) return;
-    
-    // 1. Fetch current quotes from Finnhub concurrently
-    const promises = stockList.map(async (sym) => {
-        try {
-            const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
-            const q = await res.json();
-            if (q.c) {
-                if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                STATE.lastData[sym].price = q.c;
-                STATE.lastData[sym].changeDay = q.d;
-                STATE.lastData[sym].changePct = q.dp;
-                // Leave 365/52W null initially
-            }
-        } catch(e) {}
-    });
-    
-    await Promise.all(promises);
-    
-    // 2. Then, fetch Yahoo V9 Spark for the same list to fill in 365/52W (yahooPrimary = false)
-    await fetchYahooSparkWithFinnhubFallback(stockList, finnhubKey, false);
-}
-
-
-// --- 3. CRYPTO ENGINE (BINANCE + COINGECKO FALLBACK) ---
+// --- CRYPTO PIPELINE WITH TARGETED COINGECKO PREMIUM LOGO DISCOVERY ---
 async function fetchCryptoEngine(cryptos) {
     let binanceTickers = [];
     try {
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
         if(res.ok) binanceTickers = await res.json();
-    } catch(e) { console.error("Binance down", e); }
+    } catch(e) { console.error("Binance ticker API offline", e); }
 
-    for(const sym of cryptos) {
+    const cryptoPromises = cryptos.map(async (sym) => {
         const token = sym.split('-')[0].toUpperCase();
         
         const bMatch = binanceTickers.find(t => t.symbol === token + 'USDT') ||
                        binanceTickers.find(t => t.symbol === token + 'USDC') ||
                        binanceTickers.find(t => t.symbol === token + 'FDUSD') ||
-                       binanceTickers.find(t => t.symbol === token + 'BTC') ||
-                       binanceTickers.find(t => t.symbol === token + 'BNB');
+                       binanceTickers.find(t => t.symbol === token + 'BTC');
 
         if(bMatch) {
             if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
@@ -425,12 +387,15 @@ async function fetchCryptoEngine(cryptos) {
             STATE.lastData[sym].changeDay = parseFloat(bMatch.priceChange);
             STATE.lastData[sym].changePct = parseFloat(bMatch.priceChangePercent);
             
+            // Instantly trigger silent background historical data resolution
             fetchBinanceHistoricalQuietly(sym, bMatch.symbol);
         } else {
-            // Fallback to CoinGecko
+            // Specialized premium discovery path for exotic custom assets (L3, LINEA, BNSOL, etc.)
             await fetchCoinGeckoFallback(sym, token);
         }
-    }
+    });
+
+    await Promise.all(cryptoPromises);
 }
 
 async function fetchBinanceHistoricalQuietly(sym, pair) {
@@ -456,7 +421,7 @@ async function fetchBinanceHistoricalQuietly(sym, pair) {
     } catch(e){}
 }
 
-// Improved CoinGecko Fallback with Historical Data for L3, LINEA, etc.
+// Advanced CoinGecko Discovery: Fetches sharp transparent vector/large png assets natively
 async function fetchCoinGeckoFallback(sym, token) {
     try {
         const knownIds = {
@@ -466,19 +431,22 @@ async function fetchCoinGeckoFallback(sym, token) {
         };
         
         let cgId = knownIds[token.toUpperCase()] || token.toLowerCase();
+        let transparentPremiumLogo = null;
 
-        if (!knownIds[token.toUpperCase()]) {
-            const searchRes = await fetch(`https://api.coingecko.com/api/v3/search?query=${token}`);
-            if(searchRes.ok) {
-                const searchData = await searchRes.json();
-                if(searchData.coins && searchData.coins.length > 0) {
-                    const exactMatch = searchData.coins.find(c => c.symbol.toUpperCase() === token.toUpperCase());
-                    cgId = exactMatch ? exactMatch.id : searchData.coins[0].id;
+        // Execute precise search query to gather the exact CoinGecko Asset ID and crisp transparent logo asset
+        const searchRes = await fetch(`https://api.coingecko.com/api/v3/search?query=${token}`);
+        if(searchRes.ok) {
+            const searchData = await searchRes.json();
+            if(searchData.coins && searchData.coins.length > 0) {
+                const exactMatch = searchData.coins.find(c => c.symbol.toUpperCase() === token.toUpperCase());
+                const finalTarget = exactMatch || searchData.coins[0];
+                cgId = finalTarget.id;
+                if(finalTarget.large && !finalTarget.large.includes('missing_large.png')) {
+                    transparentPremiumLogo = finalTarget.large; // Beautiful, high-resolution transparent asset
                 }
             }
         }
 
-        // Fetch current price & 24h change
         const priceRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true`);
         if(priceRes.ok) {
             const priceData = await priceRes.json();
@@ -492,30 +460,28 @@ async function fetchCoinGeckoFallback(sym, token) {
                 STATE.lastData[sym].changeDay = changeDay;
                 STATE.lastData[sym].changePct = changePct;
                 
-                renderTable(); // Show current price immediately
+                if (transparentPremiumLogo) {
+                    STATE.lastData[sym].logoUrl = transparentPremiumLogo;
+                }
                 
-                // Now fetch historical data from CoinGecko for 52W/365D
+                renderTable(); 
                 await fetchCoinGeckoHistorical(sym, cgId, currentPrice);
             }
         }
-    } catch(e) { console.error(`CoinGecko fallback failed for ${token}`, e); }
+    } catch(e) { console.error(`Premium CoinGecko fallback exception for ${token}`, e); }
 }
 
 async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
     try {
-        // Fetch 365 days of historical data (daily resolution)
         const histRes = await fetch(`https://api.coingecko.com/api/v3/coins/${cgId}/market_chart?vs_currency=usd&days=365&interval=daily`);
         if (histRes.ok) {
             const histData = await histRes.json();
             if (histData && histData.prices && histData.prices.length > 0) {
-                // Extract just the price values
                 const validPrices = histData.prices.map(p => p[1]).filter(p => p !== null && p !== undefined);
-                
                 if (validPrices.length > 0) {
                     const high52 = Math.max(...validPrices, currentPrice);
                     const low52 = Math.min(...validPrices, currentPrice);
-                    
-                    const price1Y = validPrices[0]; // Oldest price (up to 365 days ago)
+                    const price1Y = validPrices[0]; 
                     const change365 = currentPrice - price1Y;
                     const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
                     
@@ -523,18 +489,14 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
                     STATE.lastData[sym].low52 = low52;
                     STATE.lastData[sym].change365 = change365;
                     STATE.lastData[sym].return1Y = return1Y;
-                    
                     renderTable();
                 }
             }
         }
-    } catch (e) {
-        console.error(`CoinGecko historical fetch failed for ${cgId}`, e);
-    }
+    } catch (e) {}
 }
 
-
-// --- RENDER TABLE ---
+// --- RENDER TABLE ENGINE ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
