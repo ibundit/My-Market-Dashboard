@@ -1,11 +1,11 @@
-// Application State - Version 13 (Optimized State Render + Yahoo Finance Bulk Fix + Multi-API Fallback)
+// Application State - Version 14 (Data Recovery + Smart Asset Dictionary Dictionary for L3/Crypto Fallback)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
     apiSource: localStorage.getItem('apiSource') || 'yahoofinance',
     intervalId: null,
-    lastData: {}, // Holds data for ALL symbols globally
+    lastData: {}, // Global state memory cache
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -15,10 +15,9 @@ const STATE = {
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET','BNSOL','TON','TAO','LINEA','L3'];
 
-// Proxies for Yahoo API Rotation (from v9)
 const PROXIES = [
-    'https://api.allorigins.win/raw?url=',
     'https://corsproxy.io/?url=',
+    'https://api.allorigins.win/raw?url=',
     'https://api.codetabs.com/v1/proxy?quest='
 ];
 let proxyIndex = 0;
@@ -27,14 +26,13 @@ document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
     initApiKeys();
     initUI();
-    // Pre-load background fetch for ALL items across ALL tabs for seamless instant render
     fetchDataAllTabs(true);
 });
 
 function initDataMigrate() {
     let savedLists = JSON.parse(localStorage.getItem('watchlists'));
     if (!savedLists) {
-        let oldSingleList = JSON.parse(localStorage.getItem('watchlist')) || ['NVDA', 'AAPL', 'BTC-USD', 'NEAR-USD'];
+        let oldSingleList = JSON.parse(localStorage.getItem('watchlist')) || ['NVDA', 'AAPL', 'BTC-USD', 'L3-USD'];
         savedLists = { "Default": oldSingleList };
     }
     STATE.watchlists = savedLists;
@@ -60,7 +58,7 @@ function initApiKeys() {
 function verifyKeyForCurrentSource() {
     const s = STATE.apiSource;
     if (s === 'finnhub' && !STATE.keys[s]) {
-        const key = prompt(`Enter Finnhub API Key (Required for Stocks via Finnhub):`);
+        const key = prompt(`Enter Finnhub API Key:`);
         if (key) { 
             STATE.keys[s] = key; 
             localStorage.setItem(`FINNHUB_API_KEY`, key); 
@@ -118,49 +116,6 @@ function initUI() {
     renderTabs();
 }
 
-// --- Sync ---
-function exportSyncCode() {
-    const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
-    const code = btoa(JSON.stringify(data));
-    prompt("Copy this Sync Code:", code);
-}
-function importSyncCode() {
-    const code = prompt("Paste your Sync Code here:");
-    if (!code) return;
-    try {
-        const data = JSON.parse(atob(code));
-        if (data && data.watchlists) {
-            STATE.watchlists = data.watchlists;
-            STATE.currentTab = data.currentTab || Object.keys(data.watchlists)[0];
-            localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
-            localStorage.setItem('currentTab', STATE.currentTab);
-            renderTabs(); renderSkeleton(); fetchDataAllTabs(true);
-            showAlert("Data imported successfully!");
-        } else { throw new Error("Invalid format"); }
-    } catch(e) { showAlert("Failed to import. Invalid Sync Code."); }
-}
-
-// --- Tabs Management ---
-function renderTabs() {
-    const container = document.getElementById('tabs-list');
-    container.innerHTML = '';
-    const tabNames = Object.keys(STATE.watchlists);
-    
-    tabNames.forEach(tabName => {
-        const div = document.createElement('div');
-        div.className = `tab ${tabName === STATE.currentTab ? 'active' : ''}`;
-        const showDelete = tabNames.length > 1;
-        div.innerHTML = `
-            <span class="tab-name">${tabName}</span>
-            <span class="tab-action edit" title="Rename" onclick="event.stopPropagation(); renameTab('${tabName}')">✏️</span>
-            ${showDelete ? `<span class="tab-action delete" title="Delete" onclick="event.stopPropagation(); deleteTab('${tabName}')">✕</span>` : ''}
-        `;
-        div.onclick = () => switchTab(tabName);
-        container.appendChild(div);
-    });
-}
-
-// SOLVED: Changing tabs renders INSTANTLY (0 seconds) without flashing "Fetching..." or re-loading network data
 function switchTab(tabName) {
     if (STATE.currentTab === tabName) return;
     STATE.currentTab = tabName; 
@@ -169,7 +124,7 @@ function switchTab(tabName) {
     document.getElementById('orig-order-cb').checked = true;
     updateSortIcons(); 
     renderTabs(); 
-    renderTable(); // Instant presentation from existing memory cache
+    renderTable(); // Instant render from global data state cache
 }
 
 function addNewTab() {
@@ -193,7 +148,6 @@ function deleteTab(tabName) {
     localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists)); renderTabs(); renderTable();
 }
 
-// --- Utils ---
 function setupAutoRefresh() {
     if (STATE.intervalId) clearInterval(STATE.intervalId);
     if (STATE.refreshInterval > 0) STATE.intervalId = setInterval(() => fetchDataAllTabs(false), STATE.refreshInterval * 1000);
@@ -243,9 +197,8 @@ function getLogoHtml(symbol) {
     return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
 }
 
-// Fetch globally for ALL unique assets across all tabs in one consolidated pass
+// Global Parallel Data Fetching Core
 async function fetchDataAllTabs(showStatusLoader = false) {
-    // Extract unique symbols from all lists combined
     const allUniqueSymbols = new Set();
     Object.values(STATE.watchlists).forEach(list => {
         list.forEach(sym => allUniqueSymbols.add(sym));
@@ -257,7 +210,7 @@ async function fetchDataAllTabs(showStatusLoader = false) {
         return updateStatus('yellow', 'Watchlists Empty');
     }
 
-    if (showStatusLoader) updateStatus('yellow', 'Fetching Background Market Data...');
+    if (showStatusLoader) updateStatus('yellow', 'Fetching Market Data Across Tabs...');
     
     const cryptoSymbols = uniqueSymbolsArray.filter(s => s.includes('-'));
     const stockSymbols = uniqueSymbolsArray.filter(s => !s.includes('-'));
@@ -272,10 +225,9 @@ async function fetchDataAllTabs(showStatusLoader = false) {
         if (stockSymbols.length > 0) {
             if (STATE.apiSource === 'finnhub') {
                 const key = STATE.keys.finnhub;
-                if (!key) showAlert(`Missing API Key for FINNHUB`);
+                if (!key) showAlert(`Missing API Key for Finnhub`);
                 else fetchPromises.push(fetchFinnhubConcurrent(key, stockSymbols));
             } else if (STATE.apiSource === 'yahoofinance') {
-                // HIGH PERFORMANCE BULK FETCH V9
                 fetchPromises.push(fetchYahooFinanceSparkBulk(stockSymbols));
             }
         }
@@ -283,7 +235,7 @@ async function fetchDataAllTabs(showStatusLoader = false) {
         await Promise.all(fetchPromises);
         document.getElementById('last-updated-time').textContent = new Date().toLocaleTimeString();
         updateStatus('green', 'Connected');
-        renderTable(); // Draw current active tab view immediately
+        renderTable();
     } catch (err) {
         updateStatus('red', 'Fetch Error');
         console.error(err);
@@ -291,11 +243,10 @@ async function fetchDataAllTabs(showStatusLoader = false) {
     }
 }
 
-// 1. Yahoo Finance Spark BULK Fetcher (Optimized for ultra performance and precise Change/Change% columns)
+// FIXED: Yahoo Finance Parsing Strategy with explicit fail-safe fallback structural mappings
 async function fetchYahooFinanceSparkBulk(stockList) {
     if (stockList.length === 0) return;
     
-    // Package symbols into single comma-delimited list to hit the endpoint in ONE single fast batch
     const symbolsJoined = stockList.join(',');
     const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbolsJoined}&range=1y&interval=1d`);
     
@@ -308,9 +259,10 @@ async function fetchYahooFinanceSparkBulk(stockList) {
             const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             
-            let data = await res.json();
-            if (proxyUrl.includes('allorigins') && data.contents) {
-                data = JSON.parse(data.contents);
+            let rawData = await res.json();
+            let data = rawData;
+            if (proxyUrl.includes('allorigins') && rawData.contents) {
+                data = JSON.parse(rawData.contents);
             }
             
             if (data && data.spark && data.spark.result) {
@@ -320,13 +272,15 @@ async function fetchYahooFinanceSparkBulk(stockList) {
                     
                     const responseObj = item.response[0];
                     const meta = responseObj.meta;
+                    if (!meta) return;
                     
-                    // FIXED: Pull accurate daily changes directly derived from Yahoo's current calculation versus real-time market close definitions
                     const currentPrice = meta.regularMarketPrice;
+                    if (currentPrice === undefined || currentPrice === null) return;
+                    
+                    // Precise Calculation from close parameters
                     const changeDay = meta.regularMarketChange !== undefined ? meta.regularMarketChange : (currentPrice - (meta.previousClose || meta.chartPreviousClose || currentPrice));
                     const changePct = meta.regularMarketChangePercent !== undefined ? meta.regularMarketChangePercent : (meta.previousClose ? (changeDay / meta.previousClose) * 100 : 0);
                     
-                    // Extract historical prices safely
                     let high52 = currentPrice;
                     let low52 = currentPrice;
                     let change365 = null;
@@ -360,36 +314,34 @@ async function fetchYahooFinanceSparkBulk(stockList) {
                 });
                 success = true;
             } else {
-                throw new Error("Invalid structure returned");
+                throw new Error("Invalid format matrix structure received");
             }
         } catch (e) {
-            console.warn(`Proxy index ${proxyIndex} failed, shifting to alternative proxy...`);
+            console.warn(`Proxy fail-shift event at index ${proxyIndex}:`, e);
             proxyIndex = (proxyIndex + 1) % PROXIES.length;
             attempts++;
         }
     }
 }
 
-// 2. Binance API - Enhanced Pairs Matching (USDT -> USDC -> FDUSD -> BTC -> BNB) + Free Multi-API Fallback for BNSOL, LINEA, L3
+// Binance Core Scanning + CoinCap Advanced Multi-dictionary asset mapping
 async function fetchBinanceBulk(cryptoList) {
     try {
         const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr`);
-        if (!res.ok) return;
+        if (!res.ok) throw new Error("Binance down");
         const allTickers = await res.json();
         
         for (const sym of cryptoList) {
             const token = sym.split('-')[0].toUpperCase();
             
-            // Comprehensive pair checking mechanism to capture newer or special tokens like BNSOL, LINEA, etc.
+            // Binance check sequence
             const data = allTickers.find(t => t.symbol === token + 'USDT') ||
                          allTickers.find(t => t.symbol === token + 'USDC') ||
                          allTickers.find(t => t.symbol === token + 'FDUSD') ||
-                         allTickers.find(t => t.symbol === token + 'TRY') ||
                          allTickers.find(t => t.symbol === token + 'BTC') ||
                          allTickers.find(t => t.symbol === token + 'BNB');
             
             if (data) {
-                // Found on Binance
                 if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
                 STATE.lastData[sym].symbol = sym;
                 STATE.lastData[sym].price = parseFloat(data.lastPrice);
@@ -398,12 +350,16 @@ async function fetchBinanceBulk(cryptoList) {
                 
                 fetchBinanceHistorical(sym, data.symbol);
             } else {
-                // FALLBACK MECHANISM: If completely missing on Binance (e.g. L3 or specific custom variants), route through public CoinCap asset indexing
+                // Route to structural global dictionary fallback
                 await fetchCoinCapFallback(sym, token);
             }
         }
-    } catch(e) { 
-        console.error(`Binance bulk system processing exception`, e); 
+    } catch(e) {
+        // Fallback for all items if Binance throws CORS/Network block
+        for (const sym of cryptoList) {
+            const token = sym.split('-')[0].toUpperCase();
+            await fetchCoinCapFallback(sym, token);
+        }
     }
 }
 
@@ -435,18 +391,34 @@ async function fetchBinanceHistorical(sym, pair) {
     } catch(e){}
 }
 
-// 3. Fallback Multi-API Processing Engine (CoinCap Assets Routing + Automated Native 52W Math Arrays)
+// FIXED: CoinCap Dictionary Map with explicit handling for complex slugs like L3 -> layer3
 async function fetchCoinCapFallback(sym, token) {
     try {
-        // Find accurate internal crypto slug (e.g. "layer3", "linea")
-        const searchRes = await fetch(`https://api.coincap.io/v2/assets?search=${token}&limit=1`);
-        if (!searchRes.ok) return;
-        const searchJson = await searchRes.json();
+        let slug = token.toLowerCase();
+        // Smart translation entry for missing global tokens
+        if (slug === 'l3') slug = 'layer3';
+        if (slug === 'linea') slug = 'linea-network';
+
+        let coinData = null;
         
-        if (searchJson.data && searchJson.data.length > 0) {
-            const coinData = searchJson.data[0];
+        // Try direct exact slug query first for speed and precision
+        const directRes = await fetch(`https://api.coincap.io/v2/assets/${slug}`);
+        if (directRes.ok) {
+            const directJson = await directRes.json();
+            if (directJson.data) coinData = directJson.data;
+        }
+        
+        // Secondary fallback search filter
+        if (!coinData) {
+            const searchRes = await fetch(`https://api.coincap.io/v2/assets?search=${slug}&limit=1`);
+            if (searchRes.ok) {
+                const searchJson = await searchRes.json();
+                if (searchJson.data && searchJson.data.length > 0) coinData = searchJson.data[0];
+            }
+        }
+        
+        if (coinData) {
             const coinId = coinData.id;
-            
             if (!STATE.lastData[sym]) STATE.lastData[sym] = {};
             
             const currentPrice = parseFloat(coinData.priceUsd);
@@ -457,7 +429,6 @@ async function fetchCoinCapFallback(sym, token) {
             STATE.lastData[sym].changePct = changePct;
             STATE.lastData[sym].changeDay = currentPrice - (currentPrice / (1 + (changePct/100)));
 
-            // Request 1-Year chronological intervals to parse historical milestones manually inside JavaScript execution context
             const now = Date.now();
             const oneYearAgo = now - (365 * 24 * 60 * 60 * 1000);
             
@@ -470,17 +441,12 @@ async function fetchCoinCapFallback(sym, token) {
                     if (historyData && historyData.length > 0) {
                         const validPrices = historyData.map(item => parseFloat(item.priceUsd));
                         
-                        const high52 = Math.max(...validPrices, currentPrice);
-                        const low52 = Math.min(...validPrices, currentPrice);
+                        STATE.lastData[sym].high52 = Math.max(...validPrices, currentPrice);
+                        STATE.lastData[sym].low52 = Math.min(...validPrices, currentPrice);
                         
                         const price1Y = validPrices[0];
-                        const change365 = currentPrice - price1Y;
-                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                        
-                        STATE.lastData[sym].high52 = high52;
-                        STATE.lastData[sym].low52 = low52;
-                        STATE.lastData[sym].change365 = change365;
-                        STATE.lastData[sym].return1Y = return1Y;
+                        STATE.lastData[sym].change365 = currentPrice - price1Y;
+                        STATE.lastData[sym].return1Y = price1Y ? (STATE.lastData[sym].change365 / price1Y) * 100 : 0;
                     }
                 }
             } catch(hErr) { 
@@ -489,11 +455,10 @@ async function fetchCoinCapFallback(sym, token) {
             renderTable();
         }
     } catch(e) { 
-        console.error(`CoinCap Fallback exception handling array map for ${token}`, e); 
+        console.error(`CoinCap Fallback exception processing loop for ${token}`, e); 
     }
 }
 
-// 4. Finnhub Fallback Processor
 async function fetchFinnhubConcurrent(key, stockList) {
     const promises = stockList.map(async (sym) => {
         try {
@@ -570,6 +535,26 @@ function renderSkeleton() {
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return;
     tbody.innerHTML = currentList.map(() => `<tr><td colspan="11"><div class="skeleton"></div></td></tr>`).join('');
+}
+
+function exportSyncCode() {
+    const data = { watchlists: STATE.watchlists, currentTab: STATE.currentTab };
+    prompt("Copy this Sync Code:", btoa(JSON.stringify(data)));
+}
+function importSyncCode() {
+    const code = prompt("Paste your Sync Code here:");
+    if (!code) return;
+    try {
+        const data = JSON.parse(atob(code));
+        if (data && data.watchlists) {
+            STATE.watchlists = data.watchlists;
+            STATE.currentTab = data.currentTab || Object.keys(data.watchlists)[0];
+            localStorage.setItem('watchlists', JSON.stringify(STATE.watchlists));
+            localStorage.setItem('currentTab', STATE.currentTab);
+            renderTabs(); renderSkeleton(); fetchDataAllTabs(true);
+            showAlert("Data imported successfully!");
+        }
+    } catch(e) { showAlert("Failed to import Sync Code."); }
 }
 
 let dragSourceEl = null;
