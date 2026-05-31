@@ -45,7 +45,7 @@ input[type="checkbox"] { cursor: pointer; transform: scale(1.2); }
 .tab-action.delete:hover { color: #fca5a5; }
 .tab.active .tab-action { display: inline-block; }
 
-.sync-controls { display: flex; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.sync-controls { display: flex; gap: 10px; margin-left: auto; flex-shrink: 0; }
 
 .table-container { background-color: var(--panel-bg); border-radius: 12px; border: 1px solid var(--border-color); overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; }

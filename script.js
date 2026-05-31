@@ -1,4 +1,4 @@
-// Application State - Version 22 (Yahoo Primary for Market Cap & FWD PE + Top-Right Toolbar Layout)
+// Application State - Version 24 (P/E GAAP back to Finnhub + Bulletproof Yahoo Proxy fallback)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -269,12 +269,13 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
-    // 1. Finnhub Core Prices (Real-time live quotes)
+    // 1. Finnhub Core Prices + P/E GAAP TTM (from metric endpoint as requested)
     const finnhubQueue = Promise.all(stockList.map(async (sym) => {
         try {
-            const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
-            if (res.ok) {
-                const q = await res.json();
+            // Price info
+            const resPrice = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
+            if (resPrice.ok) {
+                const q = await resPrice.json();
                 if (q.c) {
                     if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
                     STATE.lastData[sym].price = q.c;
@@ -282,62 +283,82 @@ async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
                     STATE.lastData[sym].changePct = q.dp;
                 }
             }
-            // Note: We bypass Finnhub metrics for Market Cap/Forward PE to prevent inaccurate local-currency values (like TSM 59T)
+            
+            // P/E GAAP TTM from Finnhub metrics endpoint
+            const resMetric = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
+            if (resMetric.ok) {
+                const m = await resMetric.json();
+                if (m && m.metric) {
+                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                    STATE.lastData[sym].peTtm = m.metric.peTTM || null;
+                }
+            }
         } catch(e) {}
     }));
 
-    // 2. Yahoo Spark & Quote Pipeline (Provides accurate global metrics in USD)
+    // 2. Yahoo Quote Pipeline for FWD PE & Market Cap (With query1 + query2 failover)
     const yahooHistoricalQueue = fetchYahooSparkHistoricalOnly(stockList);
     const yahooQuoteQueue = fetchYahooQuotePrimaryMetrics(stockList);
 
     await Promise.all([finnhubQueue, yahooHistoricalQueue, yahooQuoteQueue]);
 }
 
-// v22: Yahoo Finance quote serves as primary for Market Cap & Non-GAAP Forward PE 
 async function fetchYahooQuotePrimaryMetrics(stockList) {
     const chunkSize = 50;
     for (let i = 0; i < stockList.length; i += chunkSize) {
         const chunk = stockList.slice(i, i + chunkSize);
         const symbols = chunk.join(',');
-        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
+        
+        // Use multiple API servers for high availability
+        const apiEndpoints = [
+            `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`,
+            `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`
+        ];
         
         let success = false;
-        let attempts = 0;
         
-        while (!success && attempts < PROXIES.length) {
-            const proxyUrl = PROXIES[proxyIndex];
-            try {
-                const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                
-                let data = await res.json();
-                if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
-                
-                if (data && data.quoteResponse && data.quoteResponse.result) {
-                    data.quoteResponse.result.forEach(q => {
-                        const sym = q.symbol;
-                        if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                        
-                        // 1. Accurate USD Market Cap (Yahoo provides exact global USD market cap)
-                        if (q.marketCap) {
-                            STATE.lastData[sym].marketCap = q.marketCap / 1000000; // converted to millions to match format logic
-                        } else {
-                            STATE.lastData[sym].marketCap = null;
-                        }
-
-                        // 2. Accurate Non-GAAP P/E FWD directly from Yahoo
-                        STATE.lastData[sym].peFwd = q.forwardPE || null;
-
-                        // 3. P/E GAAP TTM from Yahoo
-                        STATE.lastData[sym].peTtm = q.trailingPE || null;
-                    });
-                    success = true;
-                } else {
-                    throw new Error("Invalid Format");
+        for (const url of apiEndpoints) {
+            if (success) break;
+            const targetUrl = encodeURIComponent(url);
+            let attempts = 0;
+            
+            while (!success && attempts < PROXIES.length) {
+                const proxyUrl = PROXIES[proxyIndex];
+                try {
+                    const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    
+                    let data = await res.json();
+                    if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
+                    if (proxyUrl.includes('codetabs') && typeof data === 'string') data = JSON.parse(data);
+                    
+                    if (data && data.quoteResponse && data.quoteResponse.result) {
+                        data.quoteResponse.result.forEach(q => {
+                            const sym = q.symbol;
+                            if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                            
+                            // Get genuine USD Market Cap (Yahoo provides absolute values)
+                            if (q.marketCap) {
+                                STATE.lastData[sym].marketCap = q.marketCap / 1000000; 
+                            }
+                            
+                            // Get Non-GAAP Forward PE
+                            if (q.forwardPE) {
+                                STATE.lastData[sym].peFwd = q.forwardPE;
+                            }
+                            
+                            // Backup fallback for GAAP TTM if Finnhub failed
+                            if (!STATE.lastData[sym].peTtm && q.trailingPE) {
+                                STATE.lastData[sym].peTtm = q.trailingPE;
+                            }
+                        });
+                        success = true;
+                        break;
+                    }
+                } catch (e) {
+                    proxyIndex = (proxyIndex + 1) % PROXIES.length;
+                    attempts++;
                 }
-            } catch (e) {
-                proxyIndex = (proxyIndex + 1) % PROXIES.length;
-                attempts++;
             }
         }
     }
@@ -357,53 +378,60 @@ async function fetchYahooSparkHistoricalOnly(stockList) {
 
 async function fetchYahooSparkChunk(chunk) {
     const symbols = chunk.join(',');
-    const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`);
+    const apiEndpoints = [
+        `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`,
+        `https://query2.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`
+    ];
     
     let success = false;
-    let attempts = 0;
-    
-    while (!success && attempts < PROXIES.length) {
-        const proxyUrl = PROXIES[proxyIndex];
-        try {
-            const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            
-            let data = await res.json();
-            if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
-            
-            if (data && data.spark && data.spark.result) {
-                data.spark.result.forEach(item => {
-                    const sym = item.symbol;
-                    if(!item.response || !item.response[0] || !item.response[0].indicators) return;
-                    
-                    const meta = item.response[0].meta;
-                    const closePrices = item.response[0].indicators.quote[0].close;
-                    if(!closePrices || closePrices.length === 0) return;
-                    
-                    const validPrices = closePrices.filter(p => p !== null && p !== undefined);
-                    if(validPrices.length === 0) return;
-                    
-                    const currentPrice = meta.regularMarketPrice;
-                    const price1Y = validPrices[0];
-                    const change365 = currentPrice - price1Y;
-                    const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                    
-                    const high52 = Math.max(...validPrices, currentPrice);
-                    const low52 = Math.min(...validPrices, currentPrice);
+    for (const url of apiEndpoints) {
+        if (success) break;
+        const targetUrl = encodeURIComponent(url);
+        let attempts = 0;
+        
+        while (!success && attempts < PROXIES.length) {
+            const proxyUrl = PROXIES[proxyIndex];
+            try {
+                const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                
+                let data = await res.json();
+                if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
+                if (proxyUrl.includes('codetabs') && typeof data === 'string') data = JSON.parse(data);
+                
+                if (data && data.spark && data.spark.result) {
+                    data.spark.result.forEach(item => {
+                        const sym = item.symbol;
+                        if(!item.response || !item.response[0] || !item.response[0].indicators) return;
+                        
+                        const meta = item.response[0].meta;
+                        const closePrices = item.response[0].indicators.quote[0].close;
+                        if(!closePrices || closePrices.length === 0) return;
+                        
+                        const validPrices = closePrices.filter(p => p !== null && p !== undefined);
+                        if(validPrices.length === 0) return;
+                        
+                        const currentPrice = meta.regularMarketPrice;
+                        const price1Y = validPrices[0];
+                        const change365 = currentPrice - price1Y;
+                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
+                        
+                        const high52 = Math.max(...validPrices, currentPrice);
+                        const low52 = Math.min(...validPrices, currentPrice);
 
-                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                    STATE.lastData[sym].change365 = change365;
-                    STATE.lastData[sym].return1Y = return1Y;
-                    STATE.lastData[sym].high52 = high52;
-                    STATE.lastData[sym].low52 = low52;
-                });
-                success = true;
-            } else {
-                throw new Error("Invalid Format");
+                        if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                        STATE.lastData[sym].change365 = change365;
+                        STATE.lastData[sym].return1Y = return1Y;
+                        STATE.lastData[sym].high52 = high52;
+                        STATE.lastData[sym].low52 = low52;
+                    });
+                    success = true;
+                    break;
+                }
+            } catch (e) {
+                proxyIndex = (proxyIndex + 1) % PROXIES.length;
+                attempts++;
             }
-        } catch (e) {
-            proxyIndex = (proxyIndex + 1) % PROXIES.length;
-            attempts++;
         }
     }
 }
@@ -595,7 +623,7 @@ function createRowElement(item) {
     const sign365 = item.change365 > 0 ? '+' : '';
 
     const fmtMoney = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-    const fmtValue2D = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toFixed(2);
+    const fmtValue2D = (v) => v == null || isNaN(v) || v === '—' ? '—' : parseFloat(v).toFixed(2);
     const fmtPct = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toFixed(2) + '%';
     const getCol = (v) => v == null || isNaN(v) || v == 0 ? 'val-neutral' : v > 0 ? 'val-up' : 'val-down';
 
