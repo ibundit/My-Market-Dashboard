@@ -1,4 +1,4 @@
-// Application State - Version 18 (Advanced Logo Fallbacks + Ultra Speed Hybrid)
+// Application State - Version 19 (v18 Base + Finnhub Fundamental Metrics Extension)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -14,7 +14,6 @@ const STATE = {
 
 const KNOWN_CRYPTOS = ['BTC','ETH','USDT','BNB','SOL','USDC','XRP','ADA','DOGE','SHIB','AVAX','DOT','LINK','TRX','MATIC','LTC','BCH','XLM','NEAR','UNI','ZETA','IO','APT','SUI','RENDER','FET','BNSOL','TON','TAO','LINEA','L3'];
 
-// Multi-Source Logo Dictionary (Absolute Fallback for Tricky Coins)
 const FALLBACK_LOGOS = {
     'BNSOL': 'https://assets.coingecko.com/coins/images/39989/standard/BNSOL.png',
     'LINEA': 'https://assets.coingecko.com/coins/images/35738/standard/linea.png',
@@ -140,7 +139,7 @@ function switchTab(tabName) {
     document.getElementById('orig-order-cb').checked = true;
     updateSortIcons(); 
     renderTabs(); 
-    renderTable(); // 0 Latency from Global Cache
+    renderTable(); 
 }
 
 function addNewTab() {
@@ -180,7 +179,7 @@ function updateStatus(status, text) {
 function updateSortIcons() {
     document.querySelectorAll('th.sortable').forEach(th => {
         const icon = th.querySelector('.sort-icon');
-        icon.textContent = th.getAttribute('data-sort') === STATE.sortCol ? (STATE.sortAsc ? '▲' : '▼') : '';
+        if (icon) icon.textContent = th.getAttribute('data-sort') === STATE.sortCol ? (STATE.sortAsc ? '▲' : '▼') : '';
     });
 }
 function addSymbols() {
@@ -207,17 +206,14 @@ function getLogoHtml(symbol) {
     const isCrypto = symbol.includes('-') || symbol.includes('/');
     const cleanSym = isCrypto ? symbol.split(/[-/]/)[0].toUpperCase() : symbol.toUpperCase();
     
-    // Priority 1: State Cached URL from bulk CoinGecko fetch
     if (STATE.lastData[symbol] && STATE.lastData[symbol].logoUrl) {
         return `<img src="${STATE.lastData[symbol].logoUrl}" class="img-logo" alt="">`;
     }
     
-    // Priority 2: Hardcoded Official Multi-Source Fallbacks for stubborn tokens (BNSOL, LINEA)
     if (isCrypto && FALLBACK_LOGOS[cleanSym]) {
         return `<img src="${FALLBACK_LOGOS[cleanSym]}" class="img-logo" alt="">`;
     }
 
-    // Priority 3: Common API Resolvers
     let url = isCrypto 
         ? `https://assets.coincap.io/assets/icons/${cleanSym.toLowerCase()}@2x.png`
         : `https://financialmodelingprep.com/image-stock/${cleanSym}.png`;
@@ -245,7 +241,6 @@ async function fetchDataAllTabs(showStatusLoader = false) {
         
         if (cryptos.length > 0) {
             globalPromises.push(fetchCryptoEngine(cryptos));
-            // Trigger parallel background logo extraction so we don't depend solely on CoinGecko Fallback
             fetchCryptoLogosQuietly(cryptos); 
         }
         
@@ -272,20 +267,47 @@ async function fetchDataAllTabs(showStatusLoader = false) {
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// --- FINNHUB + YAHOO FINANCE HYBRID CORE ---
+// --- FINNHUB + YAHOO FINANCE HYBRID CORE (WITH v19 EXTENSIONS) ---
 async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
     const finnhubQueue = Promise.all(stockList.map(async (sym) => {
         try {
+            // 1. Fetch live quotes (v18 Base)
             const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
-            if (!res.ok) return;
-            const q = await res.json();
-            if (q.c) {
-                if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                STATE.lastData[sym].price = q.c;
-                STATE.lastData[sym].changeDay = q.d;
-                STATE.lastData[sym].changePct = q.dp;
+            if (res.ok) {
+                const q = await res.json();
+                if (q.c) {
+                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                    STATE.lastData[sym].price = q.c;
+                    STATE.lastData[sym].changeDay = q.d;
+                    STATE.lastData[sym].changePct = q.dp;
+                }
+            }
+
+            // 2. Fetch Basic Financials for New Columns (v19 Requirement)
+            const metricRes = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
+            if (metricRes.ok) {
+                const mData = await metricRes.json();
+                if (mData && mData.metric) {
+                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                    const m = mData.metric;
+                    
+                    // Column 1: P/E GAAP (TTM)
+                    STATE.lastData[sym].peTtm = m.peTTM || null;
+                    
+                    // Column 2: P/E GAAP (FWD) -> Current Price / Forward GAAP EPS
+                    const currentPrice = STATE.lastData[sym].price;
+                    const fwdEps = m.epsForwardAnnual || m.epsEstimateCurrentYear || null;
+                    if (currentPrice && fwdEps && fwdEps > 0) {
+                        STATE.lastData[sym].peFwd = currentPrice / fwdEps;
+                    } else {
+                        STATE.lastData[sym].peFwd = null;
+                    }
+                    
+                    // Column 3: Market Cap (stored as provided in millions)
+                    STATE.lastData[sym].marketCap = m.marketCapitalization || null;
+                }
             }
         } catch(e) {}
     }));
@@ -386,7 +408,6 @@ async function fetchCryptoEngine(cryptos) {
             
             fetchBinanceHistoricalQuietly(sym, bMatch.symbol);
         } else {
-            // For tokens NOT on Binance (e.g. L3)
             await fetchCoinGeckoFallback(sym, token);
         }
     });
@@ -394,7 +415,6 @@ async function fetchCryptoEngine(cryptos) {
     await Promise.all(cryptoPromises);
 }
 
-// Ensure logos are grabbed for ALL cryptos (even those on Binance like BNSOL)
 async function fetchCryptoLogosQuietly(cryptos) {
     const toFetch = cryptos.filter(sym => !STATE.lastData[sym]?.logoUrl);
     if(toFetch.length === 0) return;
@@ -512,13 +532,25 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
     } catch (e) {}
 }
 
+// Helper Function to Format Market Cap Unit (v19 Requirement)
+function formatMarketCap(val) {
+    if (val == null || isNaN(val)) return '—';
+    // Finnhub value arrives with a baseline unit of Millions ($M)
+    if (val >= 1000000) {
+        return '$' + (val / 1000000).toFixed(2) + 'T';
+    } else if (val >= 1000) {
+        return '$' + (val / 1000).toFixed(2) + 'B';
+    } else {
+        return '$' + parseFloat(val).toFixed(2) + 'M';
+    }
+}
 
 // --- RENDER VIEW LAYER ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
     const currentList = STATE.watchlists[STATE.currentTab] || [];
-    if (currentList.length === 0) { tbody.innerHTML = '<tr><td colspan="11" class="text-center">Watchlist empty</td></tr>'; return; }
+    if (currentList.length === 0) { tbody.innerHTML = '<tr><td colspan="14" class="text-center">Watchlist empty</td></tr>'; return; }
 
     let items = currentList.map(sym => STATE.lastData[sym] || { symbol: sym });
     const origOrderCb = document.getElementById('orig-order-cb');
@@ -543,6 +575,7 @@ function createRowElement(item) {
     const sign365 = item.change365 > 0 ? '+' : '';
 
     const fmtMoney = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    const fmtValue2D = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toFixed(2);
     const fmtPct = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toFixed(2) + '%';
     const getCol = (v) => v == null || isNaN(v) || v == 0 ? 'val-neutral' : v > 0 ? 'val-up' : 'val-down';
 
@@ -559,6 +592,10 @@ function createRowElement(item) {
         <td class="text-right ${getCol(item.return1Y)}">${sign365}${fmtPct(item.return1Y)}</td>
         <td class="text-right">${fmtMoney(item.high52)}</td>
         <td class="text-right">${fmtMoney(item.low52)}</td>
+        <!-- Added Columns in v19 -->
+        <td class="text-right">${fmtValue2D(item.peTtm)}</td>
+        <td class="text-right">${fmtValue2D(item.peFwd)}</td>
+        <td class="text-right">${formatMarketCap(item.marketCap)}</td>
         <td class="text-center"><button class="btn danger" onclick="removeSymbol('${item.symbol}')">✕</button></td>
     `;
     
@@ -573,7 +610,7 @@ function renderSkeleton() {
     const tbody = document.getElementById('table-body');
     const currentList = STATE.watchlists[STATE.currentTab] || [];
     if (currentList.length === 0) return;
-    tbody.innerHTML = currentList.map(() => `<tr><td colspan="11"><div class="skeleton"></div></td></tr>`).join('');
+    tbody.innerHTML = currentList.map(() => `<tr><td colspan="14"><div class="skeleton"></div></td></tr>`).join('');
 }
 
 function exportSyncCode() {
