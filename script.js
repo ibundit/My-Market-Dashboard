@@ -1,4 +1,4 @@
-// Application State - Version 20 (P/E FWD Fallback + Yahoo Hybrid)
+// Application State - Version 22 (Yahoo Primary for Market Cap & FWD PE + Top-Right Toolbar Layout)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -41,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function initDataMigrate() {
     let savedLists = JSON.parse(localStorage.getItem('watchlists'));
     if (!savedLists) {
-        let oldSingleList = JSON.parse(localStorage.getItem('watchlist')) || ['NVDA', 'AAPL', 'BTC-USD', 'L3-USD'];
+        let oldSingleList = JSON.parse(localStorage.getItem('watchlist')) || ['NVDA', 'AAPL', 'TSM', 'BTC-USD'];
         savedLists = { "Default": oldSingleList };
     }
     STATE.watchlists = savedLists;
@@ -223,7 +223,6 @@ function getLogoHtml(symbol) {
     return `<img src="${url}" class="img-logo" onerror="this.src='${fallbackUrl}'">`;
 }
 
-// --- PARALLEL GLOBAL FETCH ---
 async function fetchDataAllTabs(showStatusLoader = false) {
     const allSymbols = new Set();
     Object.values(STATE.watchlists).forEach(list => list.forEach(sym => allSymbols.add(sym)));
@@ -267,11 +266,10 @@ async function fetchDataAllTabs(showStatusLoader = false) {
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// --- FINNHUB + YAHOO FINANCE HYBRID CORE (WITH v20 EXTENSIONS) ---
 async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
-    // 1. Fire Finnhub Requests (Quotes & Metrics)
+    // 1. Finnhub Core Prices (Real-time live quotes)
     const finnhubQueue = Promise.all(stockList.map(async (sym) => {
         try {
             const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
@@ -284,52 +282,23 @@ async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
                     STATE.lastData[sym].changePct = q.dp;
                 }
             }
-
-            const metricRes = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
-            if (metricRes.ok) {
-                const mData = await metricRes.json();
-                if (mData && mData.metric) {
-                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                    const m = mData.metric;
-                    
-                    // Column 1: P/E GAAP (TTM)
-                    STATE.lastData[sym].peTtm = m.peTTM || null;
-                    
-                    // Column 2: P/E (FWD) Logic Update v20
-                    // Finnhub doesn't consistently provide GAAP Forward EPS on the free tier.
-                    // We attempt to calculate a Non-GAAP FWD PE if 'epsForwardAnnual' is missing or null, using 'epsEstimateCurrentYear'
-                    const currentPrice = STATE.lastData[sym].price;
-                    const fwdEps = m.epsForwardAnnual || m.epsEstimateCurrentYear || null;
-                    
-                    if (currentPrice && fwdEps && fwdEps > 0) {
-                        STATE.lastData[sym].peFwd = currentPrice / fwdEps;
-                    } else {
-                        STATE.lastData[sym].peFwd = null; // Will fallback to Yahoo Finance Quote data
-                    }
-                    
-                    // Column 3: Market Cap
-                    STATE.lastData[sym].marketCap = m.marketCapitalization || null;
-                }
-            }
+            // Note: We bypass Finnhub metrics for Market Cap/Forward PE to prevent inaccurate local-currency values (like TSM 59T)
         } catch(e) {}
     }));
 
-    // 2. Fire Yahoo Requests (Spark for History + Quote for robust Fallbacks)
+    // 2. Yahoo Spark & Quote Pipeline (Provides accurate global metrics in USD)
     const yahooHistoricalQueue = fetchYahooSparkHistoricalOnly(stockList);
-    
-    // v20: Also fetch Yahoo Quote data to fill in gaps (like P/E FWD and Market Cap) if Finnhub failed
-    const yahooQuoteQueue = fetchYahooQuoteFallback(stockList);
+    const yahooQuoteQueue = fetchYahooQuotePrimaryMetrics(stockList);
 
     await Promise.all([finnhubQueue, yahooHistoricalQueue, yahooQuoteQueue]);
 }
 
-// Yahoo Quote API (Used as a fallback to catch missing Finnhub PE FWD / Market Cap)
-async function fetchYahooQuoteFallback(stockList) {
-    const chunkSize = 50; // Yahoo Quote handles 50 easily
+// v22: Yahoo Finance quote serves as primary for Market Cap & Non-GAAP Forward PE 
+async function fetchYahooQuotePrimaryMetrics(stockList) {
+    const chunkSize = 50;
     for (let i = 0; i < stockList.length; i += chunkSize) {
         const chunk = stockList.slice(i, i + chunkSize);
         const symbols = chunk.join(',');
-        
         const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
         
         let success = false;
@@ -349,19 +318,18 @@ async function fetchYahooQuoteFallback(stockList) {
                         const sym = q.symbol;
                         if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
                         
-                        // FALLBACK 1: P/E FWD
-                        // If Finnhub calculation failed (is null), use Yahoo's provided forwardPE
-                        if (STATE.lastData[sym].peFwd == null && q.forwardPE) {
-                            STATE.lastData[sym].peFwd = q.forwardPE;
+                        // 1. Accurate USD Market Cap (Yahoo provides exact global USD market cap)
+                        if (q.marketCap) {
+                            STATE.lastData[sym].marketCap = q.marketCap / 1000000; // converted to millions to match format logic
+                        } else {
+                            STATE.lastData[sym].marketCap = null;
                         }
 
-                        // FALLBACK 2: Market Cap
-                        // If Finnhub failed, use Yahoo's marketCap. 
-                        // Note: Yahoo returns exact dollars (e.g. 3000000000). Finnhub returns millions (e.g. 3000).
-                        // We divide Yahoo's by 1M to match the expected formatting logic downstream.
-                        if (STATE.lastData[sym].marketCap == null && q.marketCap) {
-                            STATE.lastData[sym].marketCap = q.marketCap / 1000000;
-                        }
+                        // 2. Accurate Non-GAAP P/E FWD directly from Yahoo
+                        STATE.lastData[sym].peFwd = q.forwardPE || null;
+
+                        // 3. P/E GAAP TTM from Yahoo
+                        STATE.lastData[sym].peTtm = q.trailingPE || null;
                     });
                     success = true;
                 } else {
@@ -378,7 +346,6 @@ async function fetchYahooQuoteFallback(stockList) {
 async function fetchYahooSparkHistoricalOnly(stockList) {
     const chunkSize = 15;
     const batchPromises = [];
-    
     for (let i = 0; i < stockList.length; i += chunkSize) {
         const chunk = stockList.slice(i, i + chunkSize);
         const staggerDelay = (i / chunkSize) * 100; 
@@ -441,8 +408,6 @@ async function fetchYahooSparkChunk(chunk) {
     }
 }
 
-
-// --- CRYPTO PIPELINE (BINANCE + COINGECKO) ---
 async function fetchCryptoEngine(cryptos) {
     let binanceTickers = [];
     try {
@@ -590,19 +555,17 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
     } catch (e) {}
 }
 
-// Helper Function to Format Market Cap Unit
 function formatMarketCap(val) {
     if (val == null || isNaN(val)) return '—';
     if (val >= 1000000) {
         return '$' + (val / 1000000).toFixed(2) + 'T';
-    } else if (val >= 1000) {
+    } else if (val >= 100) {
         return '$' + (val / 1000).toFixed(2) + 'B';
     } else {
         return '$' + parseFloat(val).toFixed(2) + 'M';
     }
 }
 
-// --- RENDER VIEW LAYER ---
 function renderTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
