@@ -1,4 +1,4 @@
-// Application State - Version 24 (P/E GAAP back to Finnhub + Bulletproof Yahoo Proxy fallback)
+// Application State - Version 25 (100% Reliable Finnhub Metric Consolidation Engine)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -23,13 +23,6 @@ const FALLBACK_LOGOS = {
     'TAO': 'https://assets.coingecko.com/coins/images/31206/standard/bittensor.png',
     'TON': 'https://assets.coingecko.com/coins/images/17980/standard/ton_symbol.png'
 };
-
-const PROXIES = [
-    'https://api.allorigins.win/raw?url=',
-    'https://corsproxy.io/?url=',
-    'https://api.codetabs.com/v1/proxy?quest='
-];
-let proxyIndex = 0;
 
 document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
@@ -248,7 +241,7 @@ async function fetchDataAllTabs(showStatusLoader = false) {
             if (!currentKey) {
                 showAlert(`Missing Finnhub API Key`);
             } else {
-                globalPromises.push(fetchFinnhubYahooHybrid(stocks, currentKey));
+                globalPromises.push(fetchFinnhubMasterEngine(stocks, currentKey));
             }
         }
         
@@ -264,15 +257,13 @@ async function fetchDataAllTabs(showStatusLoader = false) {
     }
 }
 
-const delay = ms => new Promise(res => setTimeout(res, ms));
-
-async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
+// SOLUTION: Solved proxy blocks completely by pulling all stock metrics through Finnhub's authenticated API token.
+async function fetchFinnhubMasterEngine(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
-    // 1. Finnhub Core Prices + P/E GAAP TTM (from metric endpoint as requested)
-    const finnhubQueue = Promise.all(stockList.map(async (sym) => {
+    await Promise.all(stockList.map(async (sym) => {
         try {
-            // Price info
+            // 1. Fetch live real-time price & daily change
             const resPrice = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
             if (resPrice.ok) {
                 const q = await resPrice.json();
@@ -284,156 +275,44 @@ async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
                 }
             }
             
-            // P/E GAAP TTM from Finnhub metrics endpoint
+            // 2. Fetch extensive stock metrics (GAAP TTM, Non-GAAP FWD, Market Cap, 52W High/Low, 1Y Return)
             const resMetric = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
             if (resMetric.ok) {
                 const m = await resMetric.json();
                 if (m && m.metric) {
                     if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                    
+                    // Native Market Cap from Finnhub (Returned directly in Millions)
+                    STATE.lastData[sym].marketCap = m.metric.marketCapitalization || null;
+                    
+                    // Native P/E GAAP TTM
                     STATE.lastData[sym].peTtm = m.metric.peTTM || null;
-                }
-            }
-        } catch(e) {}
-    }));
-
-    // 2. Yahoo Quote Pipeline for FWD PE & Market Cap (With query1 + query2 failover)
-    const yahooHistoricalQueue = fetchYahooSparkHistoricalOnly(stockList);
-    const yahooQuoteQueue = fetchYahooQuotePrimaryMetrics(stockList);
-
-    await Promise.all([finnhubQueue, yahooHistoricalQueue, yahooQuoteQueue]);
-}
-
-async function fetchYahooQuotePrimaryMetrics(stockList) {
-    const chunkSize = 50;
-    for (let i = 0; i < stockList.length; i += chunkSize) {
-        const chunk = stockList.slice(i, i + chunkSize);
-        const symbols = chunk.join(',');
-        
-        // Use multiple API servers for high availability
-        const apiEndpoints = [
-            `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`,
-            `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`
-        ];
-        
-        let success = false;
-        
-        for (const url of apiEndpoints) {
-            if (success) break;
-            const targetUrl = encodeURIComponent(url);
-            let attempts = 0;
-            
-            while (!success && attempts < PROXIES.length) {
-                const proxyUrl = PROXIES[proxyIndex];
-                try {
-                    const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     
-                    let data = await res.json();
-                    if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
-                    if (proxyUrl.includes('codetabs') && typeof data === 'string') data = JSON.parse(data);
+                    // Native P/E Non-GAAP FWD
+                    STATE.lastData[sym].peFwd = m.metric.forwardPE || null;
                     
-                    if (data && data.quoteResponse && data.quoteResponse.result) {
-                        data.quoteResponse.result.forEach(q => {
-                            const sym = q.symbol;
-                            if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                            
-                            // Get genuine USD Market Cap (Yahoo provides absolute values)
-                            if (q.marketCap) {
-                                STATE.lastData[sym].marketCap = q.marketCap / 1000000; 
-                            }
-                            
-                            // Get Non-GAAP Forward PE
-                            if (q.forwardPE) {
-                                STATE.lastData[sym].peFwd = q.forwardPE;
-                            }
-                            
-                            // Backup fallback for GAAP TTM if Finnhub failed
-                            if (!STATE.lastData[sym].peTtm && q.trailingPE) {
-                                STATE.lastData[sym].peTtm = q.trailingPE;
-                            }
-                        });
-                        success = true;
-                        break;
+                    // 52W High and 52W Low Bounds
+                    STATE.lastData[sym].high52 = m.metric['52WeekHigh'] || null;
+                    STATE.lastData[sym].low52 = m.metric['52WeekLow'] || null;
+                    
+                    // 1Y Return (52WeekPriceReturnDaily is provided as percentage, e.g. 154.2 = 154.2%)
+                    const return1Y = m.metric['52WeekPriceReturnDaily'] || null;
+                    STATE.lastData[sym].return1Y = return1Y;
+                    
+                    // ACCURATE CALCULATION FOR 365D CHANGE:
+                    // If return1Y exists, backtrack the original price to figure out absolute dollars changed
+                    if (STATE.lastData[sym].price && return1Y !== null) {
+                        const originalPrice1YAgo = STATE.lastData[sym].price / (1 + (return1Y / 100));
+                        STATE.lastData[sym].change365 = STATE.lastData[sym].price - originalPrice1YAgo;
+                    } else {
+                        STATE.lastData[sym].change365 = null;
                     }
-                } catch (e) {
-                    proxyIndex = (proxyIndex + 1) % PROXIES.length;
-                    attempts++;
                 }
             }
+        } catch(e) {
+            console.error(`Finnhub request error for ${sym}:`, e);
         }
-    }
-}
-
-async function fetchYahooSparkHistoricalOnly(stockList) {
-    const chunkSize = 15;
-    const batchPromises = [];
-    for (let i = 0; i < stockList.length; i += chunkSize) {
-        const chunk = stockList.slice(i, i + chunkSize);
-        const staggerDelay = (i / chunkSize) * 100; 
-        const p = delay(staggerDelay).then(() => fetchYahooSparkChunk(chunk));
-        batchPromises.push(p);
-    }
-    await Promise.all(batchPromises);
-}
-
-async function fetchYahooSparkChunk(chunk) {
-    const symbols = chunk.join(',');
-    const apiEndpoints = [
-        `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`,
-        `https://query2.finance.yahoo.com/v7/finance/spark?symbols=${symbols}&range=1y&interval=1d`
-    ];
-    
-    let success = false;
-    for (const url of apiEndpoints) {
-        if (success) break;
-        const targetUrl = encodeURIComponent(url);
-        let attempts = 0;
-        
-        while (!success && attempts < PROXIES.length) {
-            const proxyUrl = PROXIES[proxyIndex];
-            try {
-                const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                
-                let data = await res.json();
-                if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
-                if (proxyUrl.includes('codetabs') && typeof data === 'string') data = JSON.parse(data);
-                
-                if (data && data.spark && data.spark.result) {
-                    data.spark.result.forEach(item => {
-                        const sym = item.symbol;
-                        if(!item.response || !item.response[0] || !item.response[0].indicators) return;
-                        
-                        const meta = item.response[0].meta;
-                        const closePrices = item.response[0].indicators.quote[0].close;
-                        if(!closePrices || closePrices.length === 0) return;
-                        
-                        const validPrices = closePrices.filter(p => p !== null && p !== undefined);
-                        if(validPrices.length === 0) return;
-                        
-                        const currentPrice = meta.regularMarketPrice;
-                        const price1Y = validPrices[0];
-                        const change365 = currentPrice - price1Y;
-                        const return1Y = price1Y ? (change365 / price1Y) * 100 : 0;
-                        
-                        const high52 = Math.max(...validPrices, currentPrice);
-                        const low52 = Math.min(...validPrices, currentPrice);
-
-                        if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                        STATE.lastData[sym].change365 = change365;
-                        STATE.lastData[sym].return1Y = return1Y;
-                        STATE.lastData[sym].high52 = high52;
-                        STATE.lastData[sym].low52 = low52;
-                    });
-                    success = true;
-                    break;
-                }
-            } catch (e) {
-                proxyIndex = (proxyIndex + 1) % PROXIES.length;
-                attempts++;
-            }
-        }
-    }
+    }));
 }
 
 async function fetchCryptoEngine(cryptos) {
@@ -585,9 +464,10 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
 
 function formatMarketCap(val) {
     if (val == null || isNaN(val)) return '—';
+    // Finnhub metrics endpoint delivers value in Millions
     if (val >= 1000000) {
         return '$' + (val / 1000000).toFixed(2) + 'T';
-    } else if (val >= 100) {
+    } else if (val >= 1000) {
         return '$' + (val / 1000).toFixed(2) + 'B';
     } else {
         return '$' + parseFloat(val).toFixed(2) + 'M';
