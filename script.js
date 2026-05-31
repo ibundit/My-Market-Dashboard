@@ -1,4 +1,4 @@
-// Application State - Version 19 (v18 Base + Finnhub Fundamental Metrics Extension)
+// Application State - Version 20 (P/E FWD Fallback + Yahoo Hybrid)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
@@ -267,13 +267,13 @@ async function fetchDataAllTabs(showStatusLoader = false) {
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// --- FINNHUB + YAHOO FINANCE HYBRID CORE (WITH v19 EXTENSIONS) ---
+// --- FINNHUB + YAHOO FINANCE HYBRID CORE (WITH v20 EXTENSIONS) ---
 async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
+    // 1. Fire Finnhub Requests (Quotes & Metrics)
     const finnhubQueue = Promise.all(stockList.map(async (sym) => {
         try {
-            // 1. Fetch live quotes (v18 Base)
             const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
             if (res.ok) {
                 const q = await res.json();
@@ -285,7 +285,6 @@ async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
                 }
             }
 
-            // 2. Fetch Basic Financials for New Columns (v19 Requirement)
             const metricRes = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
             if (metricRes.ok) {
                 const mData = await metricRes.json();
@@ -296,25 +295,84 @@ async function fetchFinnhubYahooHybrid(stockList, finnhubKey) {
                     // Column 1: P/E GAAP (TTM)
                     STATE.lastData[sym].peTtm = m.peTTM || null;
                     
-                    // Column 2: P/E GAAP (FWD) -> Current Price / Forward GAAP EPS
+                    // Column 2: P/E (FWD) Logic Update v20
+                    // Finnhub doesn't consistently provide GAAP Forward EPS on the free tier.
+                    // We attempt to calculate a Non-GAAP FWD PE if 'epsForwardAnnual' is missing or null, using 'epsEstimateCurrentYear'
                     const currentPrice = STATE.lastData[sym].price;
                     const fwdEps = m.epsForwardAnnual || m.epsEstimateCurrentYear || null;
+                    
                     if (currentPrice && fwdEps && fwdEps > 0) {
                         STATE.lastData[sym].peFwd = currentPrice / fwdEps;
                     } else {
-                        STATE.lastData[sym].peFwd = null;
+                        STATE.lastData[sym].peFwd = null; // Will fallback to Yahoo Finance Quote data
                     }
                     
-                    // Column 3: Market Cap (stored as provided in millions)
+                    // Column 3: Market Cap
                     STATE.lastData[sym].marketCap = m.marketCapitalization || null;
                 }
             }
         } catch(e) {}
     }));
 
-    const yahooQueue = fetchYahooSparkHistoricalOnly(stockList);
+    // 2. Fire Yahoo Requests (Spark for History + Quote for robust Fallbacks)
+    const yahooHistoricalQueue = fetchYahooSparkHistoricalOnly(stockList);
+    
+    // v20: Also fetch Yahoo Quote data to fill in gaps (like P/E FWD and Market Cap) if Finnhub failed
+    const yahooQuoteQueue = fetchYahooQuoteFallback(stockList);
 
-    await Promise.all([finnhubQueue, yahooQueue]);
+    await Promise.all([finnhubQueue, yahooHistoricalQueue, yahooQuoteQueue]);
+}
+
+// Yahoo Quote API (Used as a fallback to catch missing Finnhub PE FWD / Market Cap)
+async function fetchYahooQuoteFallback(stockList) {
+    const chunkSize = 50; // Yahoo Quote handles 50 easily
+    for (let i = 0; i < stockList.length; i += chunkSize) {
+        const chunk = stockList.slice(i, i + chunkSize);
+        const symbols = chunk.join(',');
+        
+        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
+        
+        let success = false;
+        let attempts = 0;
+        
+        while (!success && attempts < PROXIES.length) {
+            const proxyUrl = PROXIES[proxyIndex];
+            try {
+                const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                
+                let data = await res.json();
+                if (proxyUrl.includes('allorigins') && data.contents) data = JSON.parse(data.contents);
+                
+                if (data && data.quoteResponse && data.quoteResponse.result) {
+                    data.quoteResponse.result.forEach(q => {
+                        const sym = q.symbol;
+                        if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+                        
+                        // FALLBACK 1: P/E FWD
+                        // If Finnhub calculation failed (is null), use Yahoo's provided forwardPE
+                        if (STATE.lastData[sym].peFwd == null && q.forwardPE) {
+                            STATE.lastData[sym].peFwd = q.forwardPE;
+                        }
+
+                        // FALLBACK 2: Market Cap
+                        // If Finnhub failed, use Yahoo's marketCap. 
+                        // Note: Yahoo returns exact dollars (e.g. 3000000000). Finnhub returns millions (e.g. 3000).
+                        // We divide Yahoo's by 1M to match the expected formatting logic downstream.
+                        if (STATE.lastData[sym].marketCap == null && q.marketCap) {
+                            STATE.lastData[sym].marketCap = q.marketCap / 1000000;
+                        }
+                    });
+                    success = true;
+                } else {
+                    throw new Error("Invalid Format");
+                }
+            } catch (e) {
+                proxyIndex = (proxyIndex + 1) % PROXIES.length;
+                attempts++;
+            }
+        }
+    }
 }
 
 async function fetchYahooSparkHistoricalOnly(stockList) {
@@ -532,10 +590,9 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
     } catch (e) {}
 }
 
-// Helper Function to Format Market Cap Unit (v19 Requirement)
+// Helper Function to Format Market Cap Unit
 function formatMarketCap(val) {
     if (val == null || isNaN(val)) return '—';
-    // Finnhub value arrives with a baseline unit of Millions ($M)
     if (val >= 1000000) {
         return '$' + (val / 1000000).toFixed(2) + 'T';
     } else if (val >= 1000) {
@@ -592,7 +649,6 @@ function createRowElement(item) {
         <td class="text-right ${getCol(item.return1Y)}">${sign365}${fmtPct(item.return1Y)}</td>
         <td class="text-right">${fmtMoney(item.high52)}</td>
         <td class="text-right">${fmtMoney(item.low52)}</td>
-        <!-- Added Columns in v19 -->
         <td class="text-right">${fmtValue2D(item.peTtm)}</td>
         <td class="text-right">${fmtValue2D(item.peFwd)}</td>
         <td class="text-right">${formatMarketCap(item.marketCap)}</td>
