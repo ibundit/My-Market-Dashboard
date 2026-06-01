@@ -1,12 +1,10 @@
-// Application State - Version 27 (Pure Finnhub Engine + Live Forex USD Conversion)
+// Application State - Version 28 (Blazing Fast Finnhub Parallel Execution & Adjusted ADR Market Caps)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
     intervalId: null,
     lastData: {}, 
-    profiles: {}, // Cache for Finnhub profile data (currency)
-    fxRates: {}, // Global live exchange rates (Base: USD)
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -26,27 +24,12 @@ const FALLBACK_LOGOS = {
     'TON': 'https://assets.coingecko.com/coins/images/17980/standard/ton_symbol.png'
 };
 
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
     initDataMigrate();
     initApiKeys();
     initUI();
-    // Fetch live Forex rates for accurate Market Cap calculation before fetching stocks
-    await fetchExchangeRates();
     fetchDataAllTabs(true);
 });
-
-// Fetches completely free open FX rates (No API key needed)
-async function fetchExchangeRates() {
-    try {
-        const res = await fetch('https://open.er-api.com/v6/latest/USD');
-        const data = await res.json();
-        if (data && data.rates) {
-            STATE.fxRates = data.rates;
-        }
-    } catch(e) {
-        console.error("FX fetch failed. Will use 1:1 fallback.", e);
-    }
-}
 
 function initDataMigrate() {
     let savedLists = JSON.parse(localStorage.getItem('watchlists'));
@@ -274,43 +257,41 @@ async function fetchDataAllTabs(showStatusLoader = false) {
     }
 }
 
-// 100% PURE FINNHUB ENGINE + LIVE FX CONVERSION (No Yahoo dependency)
+// 100% PURE FINNHUB ENGINE WITH PARALLEL SPEED BOOST & ADR FORMULA FIX
 async function fetchPureFinnhubEngine(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
+    // แก้ไขสูตร Market Cap ของหุ้นต่างประเทศ (ADR) ที่ Finnhub ให้หน่วยมาเป็นสกุลเงินท้องถิ่น
+    const ADR_FX_RATES = {
+        'TSM': 32.3, // หาร Market Cap กลับมาเป็น USD 
+        'SONY': 150.0,
+        'BABA': 7.2
+    };
+
     await Promise.all(stockList.map(async (sym) => {
         try {
-            // 1. Fetch live quote
-            const resPrice = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
-            const q = await resPrice.json();
-            
-            // 2. Fetch extensive metrics
-            const resMetric = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
-            const mData = await resMetric.json();
-            const m = mData.metric || {};
+            // [SPEED UPGRADE]: สั่งยิง API ทั้ง 2 เส้นพร้อมกันแบบขนาน (Parallel) เพื่อให้เร็วเท่า v18!
+            const [resPrice, resMetric] = await Promise.all([
+                fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`),
+                fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`)
+            ]);
 
-            // 3. Fetch Company Profile (needed for Market Cap Currency)
-            // Cache it to reduce redundant API calls
-            if (!STATE.profiles[sym]) {
-                const resProfile = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`);
-                const p = await resProfile.json();
-                STATE.profiles[sym] = p || {};
-            }
-            const profile = STATE.profiles[sym];
+            const q = resPrice.ok ? await resPrice.json() : {};
+            const mData = resMetric.ok ? await resMetric.json() : {};
+            const m = mData.metric || {};
 
             if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
             
-            // Setup Price Data
+            // ข้อมูลราคาปัจจุบัน
             STATE.lastData[sym].price = q.c;
             STATE.lastData[sym].changeDay = q.d;
             STATE.lastData[sym].changePct = q.dp;
             
-            // Setup Basic Metrics
+            // ข้อมูล Metrics
             STATE.lastData[sym].peTtm = m.peTTM || null;
             STATE.lastData[sym].high52 = m['52WeekHigh'] || null;
             STATE.lastData[sym].low52 = m['52WeekLow'] || null;
 
-            // Accurate 365D & 1Y Return calculation
             const return1Y = m['52WeekPriceReturnDaily'] || null;
             STATE.lastData[sym].return1Y = return1Y;
             
@@ -321,22 +302,18 @@ async function fetchPureFinnhubEngine(stockList, finnhubKey) {
                 STATE.lastData[sym].change365 = null;
             }
 
-            // --- SMART CALCULATION: P/E Non-GAAP (FWD) ---
+            // P/E Non-GAAP (FWD) คำนวณเองอย่างแม่นยำ
             let peFwd = m.forwardPE;
             if (!peFwd && q.c) {
-                // If forwardPE is empty, compute it using EPS Estimates
                 if (m.epsForwardAnnual) peFwd = q.c / m.epsForwardAnnual;
                 else if (m.epsEstimateCurrentYear) peFwd = q.c / m.epsEstimateCurrentYear;
             }
             STATE.lastData[sym].peFwd = peFwd || null;
 
-            // --- SMART CALCULATION: USD Market Cap (Solves TSM Issue) ---
-            let rawCap = m.marketCapitalization; // Finnhub sends this in millions of local currency
+            // Market Cap + นำมาแก้สูตรสำหรับหุ้น TSM
+            let rawCap = m.marketCapitalization; 
             if (rawCap) {
-                let currency = profile.currency || 'USD';
-                let fxRate = STATE.fxRates[currency] || 1; // Default to 1 if USD or fetch failed
-                
-                // Convert to accurate USD representation
+                let fxRate = ADR_FX_RATES[sym] || 1;
                 STATE.lastData[sym].marketCap = rawCap / fxRate;
             } else {
                 STATE.lastData[sym].marketCap = null;
@@ -497,7 +474,6 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
 
 function formatMarketCap(val) {
     if (val == null || isNaN(val)) return '—';
-    // Raw value is now properly converted to USD Millions
     if (val >= 1000000) {
         return '$' + (val / 1000000).toFixed(2) + 'T';
     } else if (val >= 1000) {
@@ -535,7 +511,7 @@ function createRowElement(item) {
     const signDay = item.changeDay > 0 ? '+' : '';
     const sign365 = item.change365 > 0 ? '+' : '';
 
-    // ALL NUMERIC COLUMNS STRICTLY FIXED TO 2 DECIMAL PLACES
+    // บังคับให้ตัวเลขทุกช่องแสดงจุดทศนิยม 2 ตำแหน่งเท่านั้น (.00)
     const fmtValue2D = (v) => v == null || isNaN(v) || v === '—' ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const fmtPct = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
     const getCol = (v) => v == null || isNaN(v) || v == 0 ? 'val-neutral' : v > 0 ? 'val-up' : 'val-down';
