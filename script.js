@@ -1,10 +1,12 @@
-// Application State - Version 26 (Accurate Market Cap & P/E FWD via Yahoo Finance Fetcher)
+// Application State - Version 27 (Pure Finnhub Engine + Live Forex USD Conversion)
 const STATE = {
     watchlists: {}, 
     currentTab: '',
     refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 0,
     intervalId: null,
     lastData: {}, 
+    profiles: {}, // Cache for Finnhub profile data (currency)
+    fxRates: {}, // Global live exchange rates (Base: USD)
     sortCol: null,
     sortAsc: true,
     keys: {
@@ -24,19 +26,27 @@ const FALLBACK_LOGOS = {
     'TON': 'https://assets.coingecko.com/coins/images/17980/standard/ton_symbol.png'
 };
 
-const PROXIES = [
-    'https://api.allorigins.win/raw?url=',
-    'https://corsproxy.io/?url=',
-    'https://api.codetabs.com/v1/proxy?quest='
-];
-let proxyIndex = 0;
-
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initDataMigrate();
     initApiKeys();
     initUI();
+    // Fetch live Forex rates for accurate Market Cap calculation before fetching stocks
+    await fetchExchangeRates();
     fetchDataAllTabs(true);
 });
+
+// Fetches completely free open FX rates (No API key needed)
+async function fetchExchangeRates() {
+    try {
+        const res = await fetch('https://open.er-api.com/v6/latest/USD');
+        const data = await res.json();
+        if (data && data.rates) {
+            STATE.fxRates = data.rates;
+        }
+    } catch(e) {
+        console.error("FX fetch failed. Will use 1:1 fallback.", e);
+    }
+}
 
 function initDataMigrate() {
     let savedLists = JSON.parse(localStorage.getItem('watchlists'));
@@ -248,7 +258,7 @@ async function fetchDataAllTabs(showStatusLoader = false) {
             if (!currentKey) {
                 showAlert(`Missing Finnhub API Key`);
             } else {
-                globalPromises.push(fetchFinnhubMasterEngine(stocks, currentKey));
+                globalPromises.push(fetchPureFinnhubEngine(stocks, currentKey));
             }
         }
         
@@ -264,119 +274,78 @@ async function fetchDataAllTabs(showStatusLoader = false) {
     }
 }
 
-// v26: Finnhub for Price/Change/P-E GAAP + Yahoo Finance for accurate USD Market Cap & P-E FWD
-async function fetchFinnhubMasterEngine(stockList, finnhubKey) {
+// 100% PURE FINNHUB ENGINE + LIVE FX CONVERSION (No Yahoo dependency)
+async function fetchPureFinnhubEngine(stockList, finnhubKey) {
     if (stockList.length === 0) return;
 
-    // 1. Fetch all structural data from Finnhub API
-    const finnhubQueue = Promise.all(stockList.map(async (sym) => {
+    await Promise.all(stockList.map(async (sym) => {
         try {
-            // Get live quote
+            // 1. Fetch live quote
             const resPrice = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`);
-            if (resPrice.ok) {
-                const q = await resPrice.json();
-                if (q.c) {
-                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                    STATE.lastData[sym].price = q.c;
-                    STATE.lastData[sym].changeDay = q.d;
-                    STATE.lastData[sym].changePct = q.dp;
-                }
-            }
+            const q = await resPrice.json();
             
-            // Get fundamental metrics (P/E GAAP, 52W High/Low, Return)
+            // 2. Fetch extensive metrics
             const resMetric = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`);
-            if (resMetric.ok) {
-                const m = await resMetric.json();
-                if (m && m.metric) {
-                    if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                    
-                    // Finnhub P/E GAAP TTM (Reliable for most stocks)
-                    STATE.lastData[sym].peTtm = m.metric.peTTM || null;
-                    
-                    STATE.lastData[sym].high52 = m.metric['52WeekHigh'] || null;
-                    STATE.lastData[sym].low52 = m.metric['52WeekLow'] || null;
-                    
-                    const return1Y = m.metric['52WeekPriceReturnDaily'] || null;
-                    STATE.lastData[sym].return1Y = return1Y;
-                    
-                    // Backtrack the original price using 1Y % Return to find exact $ Change
-                    if (STATE.lastData[sym].price && return1Y !== null) {
-                        const originalPrice1YAgo = STATE.lastData[sym].price / (1 + (return1Y / 100));
-                        STATE.lastData[sym].change365 = STATE.lastData[sym].price - originalPrice1YAgo;
-                    } else {
-                        STATE.lastData[sym].change365 = null;
-                    }
+            const mData = await resMetric.json();
+            const m = mData.metric || {};
 
-                    // Native Market Cap from Finnhub (Often local currency like TWD for TSM). 
-                    // This will act as an ultimate fallback if Yahoo goes down.
-                    if (STATE.lastData[sym].marketCap === undefined) {
-                        STATE.lastData[sym].marketCap = m.metric.marketCapitalization || null;
-                    }
-                }
+            // 3. Fetch Company Profile (needed for Market Cap Currency)
+            // Cache it to reduce redundant API calls
+            if (!STATE.profiles[sym]) {
+                const resProfile = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`);
+                const p = await resProfile.json();
+                STATE.profiles[sym] = p || {};
             }
+            const profile = STATE.profiles[sym];
+
+            if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
+            
+            // Setup Price Data
+            STATE.lastData[sym].price = q.c;
+            STATE.lastData[sym].changeDay = q.d;
+            STATE.lastData[sym].changePct = q.dp;
+            
+            // Setup Basic Metrics
+            STATE.lastData[sym].peTtm = m.peTTM || null;
+            STATE.lastData[sym].high52 = m['52WeekHigh'] || null;
+            STATE.lastData[sym].low52 = m['52WeekLow'] || null;
+
+            // Accurate 365D & 1Y Return calculation
+            const return1Y = m['52WeekPriceReturnDaily'] || null;
+            STATE.lastData[sym].return1Y = return1Y;
+            
+            if (q.c && return1Y !== null) {
+                const originalPrice1YAgo = q.c / (1 + (return1Y / 100));
+                STATE.lastData[sym].change365 = q.c - originalPrice1YAgo;
+            } else {
+                STATE.lastData[sym].change365 = null;
+            }
+
+            // --- SMART CALCULATION: P/E Non-GAAP (FWD) ---
+            let peFwd = m.forwardPE;
+            if (!peFwd && q.c) {
+                // If forwardPE is empty, compute it using EPS Estimates
+                if (m.epsForwardAnnual) peFwd = q.c / m.epsForwardAnnual;
+                else if (m.epsEstimateCurrentYear) peFwd = q.c / m.epsEstimateCurrentYear;
+            }
+            STATE.lastData[sym].peFwd = peFwd || null;
+
+            // --- SMART CALCULATION: USD Market Cap (Solves TSM Issue) ---
+            let rawCap = m.marketCapitalization; // Finnhub sends this in millions of local currency
+            if (rawCap) {
+                let currency = profile.currency || 'USD';
+                let fxRate = STATE.fxRates[currency] || 1; // Default to 1 if USD or fetch failed
+                
+                // Convert to accurate USD representation
+                STATE.lastData[sym].marketCap = rawCap / fxRate;
+            } else {
+                STATE.lastData[sym].marketCap = null;
+            }
+
         } catch(e) {
-            console.error(`Finnhub request error for ${sym}:`, e);
+            console.error(`Finnhub error on ${sym}:`, e);
         }
     }));
-
-    // 2. Fetch specific missing data (USD Market Cap & Non-GAAP FWD PE) from Yahoo Finance concurrently
-    const yahooQuoteQueue = fetchYahooAccurateMetrics(stockList);
-
-    await Promise.all([finnhubQueue, yahooQuoteQueue]);
-}
-
-// v26 Extension: Fetches precise USD-converted Market Cap & missing P/E FWD data from Yahoo
-async function fetchYahooAccurateMetrics(stockList) {
-    const chunkSize = 50;
-    for (let i = 0; i < stockList.length; i += chunkSize) {
-        const chunk = stockList.slice(i, i + chunkSize);
-        const symbols = chunk.join(',');
-        const targetUrl = encodeURIComponent(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`);
-        
-        let success = false;
-        let attempts = 0;
-        
-        while (!success && attempts < PROXIES.length) {
-            const proxyUrl = PROXIES[proxyIndex];
-            try {
-                const res = await fetch(proxyUrl + targetUrl, { cache: 'no-store' });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                
-                let text = await res.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch(e) {
-                    data = JSON.parse(text).contents;
-                    if(typeof data === 'string') data = JSON.parse(data);
-                }
-                
-                if (data && data.quoteResponse && data.quoteResponse.result) {
-                    data.quoteResponse.result.forEach(q => {
-                        const sym = q.symbol;
-                        if (!STATE.lastData[sym]) STATE.lastData[sym] = { symbol: sym };
-                        
-                        // OVERWRITE Finnhub's local currency cap with Yahoo's true USD Market Cap
-                        // Yahoo returns absolute values (e.g. 1940000000000), divide by 1M to match format function logic
-                        if (q.marketCap) {
-                            STATE.lastData[sym].marketCap = q.marketCap / 1000000;
-                        }
-                        
-                        // Set P/E Non-GAAP FWD directly from Yahoo's reliable engine
-                        if (q.forwardPE) {
-                            STATE.lastData[sym].peFwd = q.forwardPE;
-                        }
-                    });
-                    success = true;
-                } else {
-                    throw new Error("Invalid Format");
-                }
-            } catch (e) {
-                proxyIndex = (proxyIndex + 1) % PROXIES.length;
-                attempts++;
-            }
-        }
-    }
 }
 
 async function fetchCryptoEngine(cryptos) {
@@ -528,7 +497,7 @@ async function fetchCoinGeckoHistorical(sym, cgId, currentPrice) {
 
 function formatMarketCap(val) {
     if (val == null || isNaN(val)) return '—';
-    // Base unit is now standardized to Millions before formatting
+    // Raw value is now properly converted to USD Millions
     if (val >= 1000000) {
         return '$' + (val / 1000000).toFixed(2) + 'T';
     } else if (val >= 1000) {
@@ -566,9 +535,9 @@ function createRowElement(item) {
     const signDay = item.changeDay > 0 ? '+' : '';
     const sign365 = item.change365 > 0 ? '+' : '';
 
-    const fmtMoney = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-    const fmtValue2D = (v) => v == null || isNaN(v) || v === '—' ? '—' : parseFloat(v).toFixed(2);
-    const fmtPct = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toFixed(2) + '%';
+    // ALL NUMERIC COLUMNS STRICTLY FIXED TO 2 DECIMAL PLACES
+    const fmtValue2D = (v) => v == null || isNaN(v) || v === '—' ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtPct = (v) => v == null || isNaN(v) ? '—' : parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
     const getCol = (v) => v == null || isNaN(v) || v == 0 ? 'val-neutral' : v > 0 ? 'val-up' : 'val-down';
 
     const displaySymbol = item.symbol.includes('-') ? item.symbol.split('-')[0] : item.symbol;
@@ -577,13 +546,13 @@ function createRowElement(item) {
         <td class="drag-handle" title="Drag to reorder">☰</td>
         <td><div class="logo-container">${getLogoHtml(item.symbol)}</div></td>
         <td class="symbol-col">${displaySymbol}</td>
-        <td class="text-right">${fmtMoney(item.price)}</td>
-        <td class="text-right ${getCol(item.changeDay)}">${signDay}${fmtMoney(item.changeDay)}</td>
+        <td class="text-right">${fmtValue2D(item.price)}</td>
+        <td class="text-right ${getCol(item.changeDay)}">${signDay}${fmtValue2D(item.changeDay)}</td>
         <td class="text-right ${getCol(item.changePct)}">${signDay}${fmtPct(item.changePct)}</td>
-        <td class="text-right ${getCol(item.change365)}">${sign365}${fmtMoney(item.change365)}</td>
+        <td class="text-right ${getCol(item.change365)}">${sign365}${fmtValue2D(item.change365)}</td>
         <td class="text-right ${getCol(item.return1Y)}">${sign365}${fmtPct(item.return1Y)}</td>
-        <td class="text-right">${fmtMoney(item.high52)}</td>
-        <td class="text-right">${fmtMoney(item.low52)}</td>
+        <td class="text-right">${fmtValue2D(item.high52)}</td>
+        <td class="text-right">${fmtValue2D(item.low52)}</td>
         <td class="text-right">${fmtValue2D(item.peTtm)}</td>
         <td class="text-right">${fmtValue2D(item.peFwd)}</td>
         <td class="text-right">${formatMarketCap(item.marketCap)}</td>
